@@ -1,9 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
-import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
-import { existsSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { loadConfig, saveConfig, setBaseUrl } from "./config.js";
+import { attachHmr, webAssets, webFromSource, webIndex } from "./webAssets.js";
 import {
   clearDeliveries,
   createIssue,
@@ -61,14 +59,6 @@ import {
   mergePullRequestLocally,
 } from "./mergePullRequest.js";
 
-const bundledReactDir = join(dirname(fileURLToPath(import.meta.url)), "react");
-const reactDir = existsSync(bundledReactDir)
-  ? bundledReactDir
-  : resolve(process.cwd(), "dist/react");
-const reactIndex = existsSync(join(reactDir, "index.html"))
-  ? join(reactDir, "index.html")
-  : resolve(process.cwd(), "web/index.html");
-
 export interface CreateAppOptions {
   db: Database.Database;
   dispatcher?: WebhookDispatcher;
@@ -80,7 +70,7 @@ export function createApp(opts: CreateAppOptions): Express {
   const app = express();
 
   app.use(express.json());
-  app.use(express.static(reactDir, { index: false }));
+  app.use(webAssets());
   app.get(["/react", "/react/"], (_req, res) => res.redirect("/"));
 
   app.get("/api/health", (_req, res) => {
@@ -816,9 +806,7 @@ export function createApp(opts: CreateAppOptions): Express {
     res.status(200).json({ ok: true, issue, comment });
   });
 
-  app.get("/", (_req, res) => {
-    res.sendFile(reactIndex);
-  });
+  app.get("/", webIndex());
 
   return app;
 }
@@ -829,9 +817,10 @@ export function startServer(opts: CreateAppOptions & { port: number; host?: stri
   setBaseUrl(opts.db, baseUrl);
 
   const app = createApp(opts);
-  app.listen(opts.port, host, () => {
-    console.log(`Acme Issues  ${baseUrl}`);
+  const server = app.listen(opts.port, host, () => {
+    console.log(`Acme Issues  ${baseUrl}${webFromSource() ? "  (web from source)" : ""}`);
   });
+  attachHmr(server);
 }
 
 function parseStatus(value: unknown): IssueStatus | undefined {

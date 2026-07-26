@@ -6,8 +6,8 @@ export default defineConfig({
   base: "/",
   plugins: [react()],
   build: {
-    outDir: "../dist/react",
-    emptyOutDir: false,
+    outDir: "../dist/web",
+    emptyOutDir: true,
   },
   server: {
     proxy: {

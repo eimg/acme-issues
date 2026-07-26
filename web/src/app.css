@@ -1488,3 +1488,17 @@ textarea.input {
     transition-duration: 0.01ms !important;
   }
 }
+
+#root {
+  min-height: 100vh;
+}
+
+.query-state {
+  padding: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.react-error {
+  color: var(--danger);
+}

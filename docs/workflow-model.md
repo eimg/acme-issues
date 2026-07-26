@@ -4,8 +4,9 @@
 Acme Issues API. Automatic trigger and lifecycle callbacks remain planned.
 
 This document covers the existing-repository feature path. Brand-new project
-inception belongs to **Prelude**, which exports bootstrap artifacts for a future
-Helix empty-workspace runtime and does not create Acme Issues records today.
+inception belongs to **Prelude**, which drafts freeform docs and exports
+bootstrap artifacts for Helix empty-workspace bootstrap; Prelude does not create
+Acme Issues records today.
 
 Acme Issues remains the single implementation and pull-request intermediary
 between Acme Projects and Helix. Acme Projects will not trigger Helix directly.

@@ -33,4 +33,4 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
   Acme Issues owns the generated implementation attempt and PR lifecycle.
 - Do not add GitHub as a requirement for the local webhook loop.
 - Keep callbacks unauthenticated only while the server remains a local-development harness.
-- Before committing cross-cutting changes, run `npm test` and `npm run build`.
+- Before committing cross-cutting changes, run `npm run verify` (typecheck, test, and build).

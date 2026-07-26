@@ -67,7 +67,7 @@ This boundary lets the same review workflow accept Helix-created PRs and PRs reg
 
 ## Requirements
 
-- Node.js ≥ 20
+- Node.js 20.19 or newer
 
 ## Install
 
@@ -285,10 +285,21 @@ Pull-request status values: `draft`, `reviewing`, `changes_requested`, `blocked`
 The web interface is served at `/`.
 
 ```bash
-npm run dev -- --port 8320
+npm run dev           # serve with auto-restart; UI is served from web/ over HMR
+npm run dev:web       # standalone Vite development server; proxies /api to port 8320
+npm run typecheck
 npm test
 npm run build
+npm run verify        # typecheck + test + build
 ```
+
+## Technology
+
+- TypeScript and Node.js
+- Express
+- SQLite through `better-sqlite3`
+- React and TanStack Query
+- Vite
 
 ## License
 

@@ -369,6 +369,61 @@ body {
   flex-shrink: 0;
 }
 
+.helix-target-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 180px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.helix-target-status.online {
+  color: #166534;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.helix-target-status.offline {
+  color: #9a3412;
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.helix-target-status.unconfigured {
+  color: var(--faint, #94a3b8);
+  font-weight: 500;
+}
+
+.helix-target-status.disabled {
+  opacity: 0.72;
+}
+
+.helix-target-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.helix-target-status.online .helix-target-dot {
+  box-shadow: 0 0 0 3px rgba(22, 101, 52, 0.12);
+}
+
+.helix-target-status.pending .helix-target-dot {
+  opacity: 0.45;
+}
+
 .view-switcher {
   display: inline-flex;
   padding: 3px;

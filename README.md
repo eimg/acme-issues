@@ -140,9 +140,9 @@ When review returns `changes_requested` or `blocked`, **Address feedback** asks 
 
 The UI intentionally does not create pull requests or select repositories.
 Helix supplies the repository, branch, and exact SHA identity when it registers
-completed implementation work. The registration API retains the same generic
-contract so another trusted producer can integrate later without changing the
-review lifecycle.
+completed work via the flat tracker contract (`POST/PATCH /api/pull-requests`).
+Nested `/api/projects/:ref/pull-requests` remains for the Issues UI and other
+producers that already know the project.
 
 The current localhost harness assumes registered repositories and branches are trusted. Diff reading and Helix verification operate on local paths, and verification is not container-sandboxed yet.
 
@@ -197,6 +197,8 @@ Outbound payload (includes correlation for Helix callbacks):
 ```
 
 Headers: `X-Issues-Issue-Id`, `X-Issues-Project-Id`, `X-Issues-Source`, `X-Issues-Reason`.
+Helix’s stable contract only requires `trackerUrl` + `issueId` (and the flat
+PR/callback paths); project fields are optional extras Issues may send.
 
 Issue deliveries retry up to 3 times and appear in **Webhook deliveries**. PR review requests are sent directly to the Helix `/pr-reviews` endpoint derived from the configured `/runs` URL.
 
@@ -271,6 +273,7 @@ Helix sends `pr.review.started` and `pr.review.completed` to the same callback e
 | `GET` | `/api/projects/:projectRef` | Get project |
 | `PATCH` | `/api/projects/:projectRef` | Update project title, slug, or settings |
 | `DELETE` | `/api/projects/:projectRef` | Delete project (cascades issues, PRs, deliveries, reviews) |
+| `GET` | `/api/projects/:projectRef/helix` | Probe Helix target (`…/health` from webhook URL): `online` / `offline` / `unconfigured` |
 | `GET` | `/api/projects/:projectRef/issues` | List issues (`?status=open\|in_progress\|closed`, `?label=`, `?limit=`, `?offset=`) |
 | `POST` | `/api/projects/:projectRef/issues` | Create issue |
 | `GET` | `/api/projects/:projectRef/issues/:id` | Get issue |
@@ -282,7 +285,10 @@ Helix sends `pr.review.started` and `pr.review.completed` to the same callback e
 | `DELETE` | `/api/projects/:projectRef/issues/:issueId/comments/:commentId` | Delete comment |
 | `POST` | `/api/projects/:projectRef/issues/:id/trigger` | Manual webhook delivery |
 | `GET` | `/api/projects/:projectRef/pull-requests` | List local PRs (`?status=` optional) |
-| `POST` | `/api/projects/:projectRef/pull-requests` | Register a Git-backed PR from Helix or another trusted producer |
+| `POST` | `/api/pull-requests` | Helix soft contract: create PR; project resolved from `issueId` |
+| `GET` | `/api/pull-requests/:id` | Helix/UI soft contract: fetch PR + owning project for `?pr=` deep-links |
+| `PATCH` | `/api/pull-requests/:id` | Helix soft contract: update PR; project resolved from PR id |
+| `POST` | `/api/projects/:projectRef/pull-requests` | Register a PR in a known project (Issues UI / other producers; Helix uses the flat routes above) |
 | `DELETE` | `/api/projects/:projectRef/pull-requests` | Clear all local PR history and reviews for the project |
 | `GET` | `/api/projects/:projectRef/pull-requests/:id` | Get PR identity plus review history |
 | `DELETE` | `/api/projects/:projectRef/pull-requests/:id` | Delete one local PR and its reviews |
@@ -298,9 +304,10 @@ Helix sends `pr.review.started` and `pr.review.completed` to the same callback e
 
 `GET /api/projects/:projectRef/issues` returns `{ items, total, limit, offset }` (default `limit` 25).
 
-Deep links use `?project=<slug>&issue=<id>` or `?project=<slug>&pr=<id>`.
-Project settings and new-project use `?project=<slug>&screen=settings` and
-`?screen=new-project`.
+Deep links use `?project=<slug>&issue=<id>` or `?pr=<id>` (Helix’s flat PR
+link; Issues resolves the owning project). Nested `?project=<slug>&pr=<id>`
+still works. Project settings and new-project use `?project=<slug>&screen=settings`
+and `?screen=new-project`.
 
 Issue status values: `open`, `in_progress`, `closed`.
 

@@ -47,6 +47,7 @@ import {
   createPullRequest,
   clearPullRequests,
   deletePullRequest,
+  getPullRequest,
   getPullRequestInProject,
   hasUnmergedPullRequest,
   listPullRequestReviews,
@@ -68,6 +69,7 @@ import {
   projectSettings,
   updateProject,
 } from "./projects.js";
+import { probeHelixStatus } from "./helixStatus.js";
 
 export interface CreateAppOptions {
   db: Database.Database;
@@ -94,6 +96,109 @@ export function createApp(opts: CreateAppOptions): Express {
       externalEventId,
       pullRequestId,
     });
+  };
+
+  /**
+   * Shared PR create for nested UI routes and Helix's flat tracker contract.
+   * Helix POSTs `/api/pull-requests` with `issueId`; Issues resolves the project.
+   */
+  const createPullRequestFromBody = async (
+    project: Project,
+    body: Record<string, unknown>,
+    res: Response,
+  ): Promise<void> => {
+    const required = [
+      "title",
+      "repositoryPath",
+      "baseBranch",
+      "baseSha",
+      "headBranch",
+      "headSha",
+    ] as const;
+    for (const field of required) {
+      if (typeof body[field] !== "string" || !body[field].trim()) {
+        res.status(400).json({ error: `${field} is required` });
+        return;
+      }
+    }
+    const issueId = optionalPositiveInteger(body.issueId);
+    if (body.issueId !== undefined && !issueId) {
+      res.status(400).json({ error: "issueId must be a positive integer" });
+      return;
+    }
+    if (issueId && !getIssue(db, project, issueId)) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    const origin = parsePullRequestOrigin(body.origin);
+    if (body.origin !== undefined && !origin) {
+      res.status(400).json({ error: "origin must be helix or external" });
+      return;
+    }
+    const pullRequest = createPullRequest(db, {
+      projectId: project.id,
+      issueId,
+      title: String(body.title),
+      description: typeof body.description === "string" ? body.description : "",
+      repositoryPath: String(body.repositoryPath),
+      baseBranch: String(body.baseBranch),
+      baseSha: String(body.baseSha),
+      headBranch: String(body.headBranch),
+      headSha: String(body.headSha),
+      author: typeof body.author === "string" ? body.author : "unknown",
+      origin,
+    });
+    if (pullRequest.issueId) {
+      const linked = getIssue(db, project, pullRequest.issueId);
+      await emitProjects(
+        linked,
+        project,
+        "implementation.in_review",
+        `issue:${pullRequest.issueId}:pr:${pullRequest.id}:registered`,
+        pullRequest.id,
+      );
+    }
+    res.status(201).json(pullRequest);
+  };
+
+  const patchPullRequestFromBody = async (
+    project: Project,
+    id: number,
+    existing: NonNullable<ReturnType<typeof getPullRequest>>,
+    body: Record<string, unknown>,
+    res: Response,
+  ): Promise<void> => {
+    const status = body.status === undefined ? undefined : parseMutablePullRequestStatus(body.status);
+    if (body.status !== undefined && !status) {
+      res.status(400).json({ error: "status can only be draft, merged, or closed" });
+      return;
+    }
+    if (status === "merged" && existing.status !== "ready_to_merge") {
+      res.status(409).json({ error: "Only a ready-to-merge pull request can be marked merged" });
+      return;
+    }
+    const pullRequest = updatePullRequest(db, id, {
+      title: typeof body.title === "string" ? body.title : undefined,
+      description: typeof body.description === "string" ? body.description : undefined,
+      baseBranch: typeof body.baseBranch === "string" ? body.baseBranch : undefined,
+      baseSha: typeof body.baseSha === "string" ? body.baseSha : undefined,
+      headBranch: typeof body.headBranch === "string" ? body.headBranch : undefined,
+      headSha: typeof body.headSha === "string" ? body.headSha : undefined,
+      author: typeof body.author === "string" ? body.author : undefined,
+      status,
+      mergeCommitSha: typeof body.mergeCommitSha === "string" ? body.mergeCommitSha : undefined,
+    });
+    if (pullRequest?.status === "merged" && pullRequest.issueId) {
+      const closed = updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+      await emitProjects(
+        closed,
+        project,
+        "implementation.completed",
+        `issue:${pullRequest.issueId}:pr:${id}:merged`,
+        id,
+      );
+    }
+    res.json(pullRequest);
   };
 
   app.use(express.json());
@@ -137,6 +242,12 @@ export function createApp(opts: CreateAppOptions): Express {
       return;
     }
     res.json(project);
+  });
+
+  app.get("/api/projects/:projectRef/helix", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    res.json(await probeHelixStatus(project, fetchFn));
   });
 
   app.patch("/api/projects/:projectRef", (req, res) => {
@@ -484,6 +595,64 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ issue, delivery });
   });
 
+  // Helix soft contract: flat tracker paths. Helix does not know Issues projects;
+  // project scope is resolved from issueId / pull-request id.
+  app.post("/api/pull-requests", async (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const issueId = optionalPositiveInteger(body.issueId);
+    if (!issueId) {
+      res.status(400).json({ error: "issueId is required" });
+      return;
+    }
+    const resolved = getIssueById(db, issueId);
+    if (!resolved) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    await createPullRequestFromBody(resolved.project, body, res);
+  });
+
+  app.get("/api/pull-requests/:id", (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid pull request id" });
+      return;
+    }
+    const pullRequest = getPullRequest(db, id);
+    if (!pullRequest) {
+      res.status(404).json({ error: "Pull request not found" });
+      return;
+    }
+    const project = getProject(db, pullRequest.projectId);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    res.json({
+      ...pullRequest,
+      project: { id: project.id, slug: project.slug, title: project.title },
+    });
+  });
+
+  app.patch("/api/pull-requests/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid pull request id" });
+      return;
+    }
+    const existing = getPullRequest(db, id);
+    if (!existing) {
+      res.status(404).json({ error: "Pull request not found" });
+      return;
+    }
+    const project = getProject(db, existing.projectId);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    await patchPullRequestFromBody(project, id, existing, req.body as Record<string, unknown>, res);
+  });
+
   app.get("/api/projects/:projectRef/pull-requests", (req, res) => {
     const project = requireProject(db, req, res);
     if (!project) return;
@@ -501,59 +670,7 @@ export function createApp(opts: CreateAppOptions): Express {
   app.post("/api/projects/:projectRef/pull-requests", async (req, res) => {
     const project = requireProject(db, req, res);
     if (!project) return;
-    const body = req.body as Record<string, unknown>;
-    const required = [
-      "title",
-      "repositoryPath",
-      "baseBranch",
-      "baseSha",
-      "headBranch",
-      "headSha",
-    ] as const;
-    for (const field of required) {
-      if (typeof body[field] !== "string" || !body[field].trim()) {
-        res.status(400).json({ error: `${field} is required` });
-        return;
-      }
-    }
-    const issueId = optionalPositiveInteger(body.issueId);
-    if (body.issueId !== undefined && !issueId) {
-      res.status(400).json({ error: "issueId must be a positive integer" });
-      return;
-    }
-    if (issueId && !getIssue(db, project, issueId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    const origin = parsePullRequestOrigin(body.origin);
-    if (body.origin !== undefined && !origin) {
-      res.status(400).json({ error: "origin must be helix or external" });
-      return;
-    }
-    const pullRequest = createPullRequest(db, {
-      projectId: project.id,
-      issueId,
-      title: String(body.title),
-      description: typeof body.description === "string" ? body.description : "",
-      repositoryPath: String(body.repositoryPath),
-      baseBranch: String(body.baseBranch),
-      baseSha: String(body.baseSha),
-      headBranch: String(body.headBranch),
-      headSha: String(body.headSha),
-      author: typeof body.author === "string" ? body.author : "unknown",
-      origin,
-    });
-    if (pullRequest.issueId) {
-      const linked = getIssue(db, project, pullRequest.issueId);
-      await emitProjects(
-        linked,
-        project,
-        "implementation.in_review",
-        `issue:${pullRequest.issueId}:pr:${pullRequest.id}:registered`,
-        pullRequest.id,
-      );
-    }
-    res.status(201).json(pullRequest);
+    await createPullRequestFromBody(project, req.body as Record<string, unknown>, res);
   });
 
   app.get("/api/projects/:projectRef/pull-requests/:id", async (req, res) => {
@@ -713,38 +830,7 @@ export function createApp(opts: CreateAppOptions): Express {
       res.status(404).json({ error: "Pull request not found" });
       return;
     }
-    const body = req.body as Record<string, unknown>;
-    const status = body.status === undefined ? undefined : parseMutablePullRequestStatus(body.status);
-    if (body.status !== undefined && !status) {
-      res.status(400).json({ error: "status can only be draft, merged, or closed" });
-      return;
-    }
-    if (status === "merged" && existing.status !== "ready_to_merge") {
-      res.status(409).json({ error: "Only a ready-to-merge pull request can be marked merged" });
-      return;
-    }
-    const pullRequest = updatePullRequest(db, id, {
-      title: typeof body.title === "string" ? body.title : undefined,
-      description: typeof body.description === "string" ? body.description : undefined,
-      baseBranch: typeof body.baseBranch === "string" ? body.baseBranch : undefined,
-      baseSha: typeof body.baseSha === "string" ? body.baseSha : undefined,
-      headBranch: typeof body.headBranch === "string" ? body.headBranch : undefined,
-      headSha: typeof body.headSha === "string" ? body.headSha : undefined,
-      author: typeof body.author === "string" ? body.author : undefined,
-      status,
-      mergeCommitSha: typeof body.mergeCommitSha === "string" ? body.mergeCommitSha : undefined,
-    });
-    if (pullRequest?.status === "merged" && pullRequest.issueId) {
-      const closed = updateIssue(db, project, pullRequest.issueId, { status: "closed" });
-      await emitProjects(
-        closed,
-        project,
-        "implementation.completed",
-        `issue:${pullRequest.issueId}:pr:${id}:merged`,
-        id,
-      );
-    }
-    res.json(pullRequest);
+    await patchPullRequestFromBody(project, id, existing, req.body as Record<string, unknown>, res);
   });
 
   app.post("/api/projects/:projectRef/pull-requests/:id/review", async (req, res) => {

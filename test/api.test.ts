@@ -351,6 +351,73 @@ describe("acme-issues API", () => {
     await request(app).post("/api/projects/default/issues/99999/comments").send({ body: "missing" }).expect(404);
   });
 
+  it("reports Helix target reachability for a project", async () => {
+    const offline = await request(app).get("/api/projects/default/helix").expect(200);
+    assert.equal(offline.body.status, "offline");
+    assert.equal(offline.body.healthUrl, "http://helix.test/health");
+    assert.equal(offline.body.webhookEnabled, true);
+
+    const fetchFn: typeof fetch = async (url) => {
+      if (String(url) === "http://helix.test/health") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    };
+    const onlineApp = createApp({ db, fetchFn });
+    const online = await request(onlineApp).get("/api/projects/default/helix").expect(200);
+    assert.equal(online.body.status, "online");
+
+    await request(app)
+      .patch("/api/projects/default")
+      .send({ webhookUrl: "http://not-helix.example/hooks" })
+      .expect(200);
+    const unconfigured = await request(app).get("/api/projects/default/helix").expect(200);
+    assert.equal(unconfigured.body.status, "unconfigured");
+    assert.equal(unconfigured.body.healthUrl, null);
+
+    await request(app)
+      .patch("/api/projects/default")
+      .send({ webhookUrl: "http://helix.test/runs" })
+      .expect(200);
+  });
+
+  it("accepts Helix flat /api/pull-requests without a project path", async () => {
+    const issue = await request(app)
+      .post("/api/projects/default/issues")
+      .send({ title: "Flat PR issue", labels: ["trigger"] })
+      .expect(201);
+    const issueId = issue.body.issue.id as number;
+
+    const created = await request(app)
+      .post("/api/pull-requests")
+      .send({
+        issueId,
+        title: "Helix draft",
+        repositoryPath: "/tmp/example-repo",
+        baseBranch: "main",
+        baseSha: "base",
+        headBranch: "feature/flat",
+        headSha: "head-flat",
+        author: "helix",
+        origin: "helix",
+      })
+      .expect(201);
+
+    assert.equal(created.body.issueId, issueId);
+    assert.equal(created.body.projectId, 1);
+
+    const fetched = await request(app).get(`/api/pull-requests/${created.body.id}`).expect(200);
+    assert.equal(fetched.body.project.slug, "default");
+    assert.equal(fetched.body.headSha, "head-flat");
+
+    const patched = await request(app)
+      .patch(`/api/pull-requests/${created.body.id}`)
+      .send({ headSha: "head-flat-2", description: "continued" })
+      .expect(200);
+    assert.equal(patched.body.headSha, "head-flat-2");
+    assert.equal(patched.body.description, "continued");
+  });
+
   it("marks issue in_progress on helix run.started and closes on run.completed", async () => {
     const created = await request(app)
       .post("/api/projects/default/issues")

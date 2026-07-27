@@ -20,6 +20,7 @@ import type {
   PullRequestStatus,
   WebhookDelivery,
 } from "../../src/types";
+import type { HelixStatus } from "../../src/helixStatus";
 import { api, formatStatus, formatTime, projectApiPath } from "./api";
 
 type View = "issues" | "pull-requests";
@@ -51,23 +52,46 @@ export function App() {
   const [selectedSlug, setSelectedSlug] = useState<string | null>(initialProjectSlug);
   const [dialog, setDialog] = useState<"issue" | null>(null);
   const [toast, setToast] = useState("");
+  const [prProjectResolved, setPrProjectResolved] = useState(!initialPr || Boolean(initialProjectSlug));
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: () => api<Project[]>("/api/projects"),
   });
   const selectedProject = projects.data?.find((item) => item.slug === selectedSlug)
-    ?? projects.data?.[0]
+    ?? (prProjectResolved ? projects.data?.[0] : null)
     ?? null;
+
+  useEffect(() => {
+    if (!initialPr || initialProjectSlug || !projects.data?.length) {
+      if (!initialPr || initialProjectSlug) setPrProjectResolved(true);
+      return;
+    }
+    let cancelled = false;
+    api<{ project: { slug: string } }>(`/api/pull-requests/${initialPr}`)
+      .then((data) => {
+        if (!cancelled && data.project?.slug) setSelectedSlug(data.project.slug);
+      })
+      .catch(() => {
+        /* fall back to default project selection below */
+      })
+      .finally(() => {
+        if (!cancelled) setPrProjectResolved(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialPr, initialProjectSlug, projects.data]);
 
   useEffect(() => {
     if (!projects.data?.length) {
       if (screen === "settings") setScreen("new-project");
       return;
     }
+    if (!prProjectResolved) return;
     if (!selectedSlug || !projects.data.some((item) => item.slug === selectedSlug)) {
       setSelectedSlug(projects.data[0].slug);
     }
-  }, [projects.data, selectedSlug, screen]);
+  }, [projects.data, selectedSlug, screen, prProjectResolved]);
 
   useEffect(() => {
     if (!projects.data?.length) {
@@ -301,6 +325,7 @@ function Header({
         </div>
       </div>
       <div className="header-actions">
+        <HelixTargetStatus project={project} />
         <div className="view-switcher" role="navigation" aria-label="Workspace">
           <button
             className={`view-switch ${view === "issues" ? "active" : ""}`}
@@ -323,6 +348,39 @@ function Header({
         </button>
       </div>
     </header>
+  );
+}
+
+function HelixTargetStatus({ project }: { project: Project }) {
+  const helix = useQuery({
+    queryKey: ["helix-status", project.slug, project.webhookUrl, project.webhookEnabled],
+    queryFn: () => api<HelixStatus>(projectApiPath(project.slug, "/helix")),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+  });
+  const status = helix.data?.status ?? (helix.isError ? "offline" : null);
+  const label =
+    status === "online"
+      ? "Helix · online"
+      : status === "offline"
+        ? "Helix · offline"
+        : status === "unconfigured"
+          ? "Connect Helix"
+          : "Helix · …";
+  const title = helix.data?.healthUrl
+    ? `${helix.data.healthUrl}${project.webhookEnabled ? "" : " · webhooks disabled"}`
+    : "Set a Helix webhook URL ending in /runs in project settings";
+
+  return (
+    <div
+      className={`helix-target-status ${status ?? "pending"}${project.webhookEnabled ? "" : " disabled"}`}
+      title={title}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="helix-target-dot" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
   );
 }
 

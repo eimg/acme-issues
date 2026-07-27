@@ -1,11 +1,50 @@
 export type IssueStatus = "open" | "in_progress" | "closed";
 
+export interface Project {
+  id: number;
+  title: string;
+  slug: string;
+  webhookUrl: string;
+  labelFilter: string;
+  commentTrigger: string;
+  webhookEnabled: boolean;
+  /** Callback base URL Helix (and others) use to reach this Issues project. */
+  baseUrl: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectInput {
+  title: string;
+  slug?: string;
+  webhookUrl?: string;
+  labelFilter?: string;
+  commentTrigger?: string;
+  webhookEnabled?: boolean;
+  baseUrl?: string;
+}
+
+export interface ProjectUpdate {
+  title?: string;
+  slug?: string;
+  webhookUrl?: string;
+  labelFilter?: string;
+  commentTrigger?: string;
+  webhookEnabled?: boolean;
+  baseUrl?: string;
+}
+
 export interface Issue {
   id: number;
+  projectId: number;
   title: string;
   body: string;
   status: IssueStatus;
   labels: string[];
+  /** Acme Projects card id when this issue was created from a board handoff. */
+  sourceCardId?: string;
+  /** Acme Projects webhook URL for lifecycle projection (In progress / In review / Done). */
+  projectsCallbackUrl?: string;
   createdAt: number;
   updatedAt: number;
   url: string;
@@ -16,6 +55,8 @@ export interface IssueInput {
   body?: string;
   labels?: string[];
   status?: IssueStatus;
+  sourceCardId?: string;
+  projectsCallbackUrl?: string;
 }
 
 export interface IssueUpdate {
@@ -23,8 +64,11 @@ export interface IssueUpdate {
   body?: string;
   status?: IssueStatus;
   labels?: string[];
+  sourceCardId?: string;
+  projectsCallbackUrl?: string;
 }
 
+/** Per-project Helix/webhook settings (formerly global AppConfig). */
 export interface AppConfig {
   webhookUrl: string;
   labelFilter: string;
@@ -40,6 +84,8 @@ export interface WebhookPayload {
   external?: {
     trackerUrl: string;
     issueId: number;
+    projectId: number;
+    projectSlug: string;
   };
 }
 
@@ -47,6 +93,8 @@ export interface ContinuationWebhookPayload {
   instruction: string;
   externalEventId: string;
   trigger: string;
+  projectId: number;
+  projectSlug: string;
   /** When addressing PR feedback, Helix should update this local PR instead of creating another. */
   pullRequestId?: number;
   /** Existing head branch Helix should continue on when present locally. */
@@ -70,6 +118,7 @@ export type ReviewFindingSeverity = "blocking" | "warning" | "note";
 
 export interface PullRequest {
   id: number;
+  projectId: number;
   issueId?: number;
   title: string;
   description: string;
@@ -135,6 +184,8 @@ export interface PullRequestReviewWebhookPayload {
   callback: {
     trackerUrl: string;
     pullRequestId: number;
+    projectId: number;
+    projectSlug: string;
   };
   externalEventId: string;
 }

@@ -14,6 +14,12 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return response.json() as Promise<T>;
 }
 
+export function projectApiPath(projectRef: string, suffix = ""): string {
+  const base = `/api/projects/${encodeURIComponent(projectRef)}`;
+  if (!suffix) return base;
+  return suffix.startsWith("/") ? `${base}${suffix}` : `${base}/${suffix}`;
+}
+
 export function formatStatus(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

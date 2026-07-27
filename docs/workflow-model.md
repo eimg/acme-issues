@@ -51,7 +51,7 @@ card, but the identity model does not equate a card with an issue.
 
 `Ready` is an eligibility and handoff boundary in Acme Projects. The current
 integration is manual: the user selects **Submit as issue** on a ready card.
-Acme Projects creates the issue through the Acme Issues API with
+Acme Projects creates the issue through the Acme Issues nested project API with
 `acme-projects`, but without the configured trigger label. A human adds that
 label here when ready. The card will move to `In progress` only after Helix
 accepts a run; that callback projection is not implemented yet.

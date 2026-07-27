@@ -7,14 +7,18 @@ import type {
   IssueListResult,
   IssueStatus,
   IssueUpdate,
+  Project,
 } from "./types.js";
 
 interface IssueRow {
   id: number;
+  project_id: number;
   title: string;
   body: string;
   status: IssueStatus;
   labels: string;
+  source_card_id: string | null;
+  projects_callback_url: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -42,16 +46,20 @@ function normalizeLabels(labels: string[] | undefined): string[] {
   return out;
 }
 
-function toIssue(row: IssueRow, baseUrl: string): Issue {
+function toIssue(row: IssueRow, project: Project): Issue {
+  const base = project.baseUrl.replace(/\/$/, "");
   return {
     id: row.id,
+    projectId: row.project_id,
     title: row.title,
     body: row.body,
     status: row.status,
     labels: parseLabels(row.labels),
+    sourceCardId: row.source_card_id?.trim() || undefined,
+    projectsCallbackUrl: row.projects_callback_url?.trim() || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    url: `${baseUrl}/issues/${row.id}`,
+    url: `${base}/?project=${encodeURIComponent(project.slug)}&issue=${row.id}`,
   };
 }
 
@@ -60,16 +68,16 @@ const MAX_PAGE_LIMIT = 100;
 
 export function listIssues(
   db: Database.Database,
-  baseUrl: string,
-  query: IssueListQuery = {}
+  project: Project,
+  query: IssueListQuery = {},
 ): IssueListResult {
   const limit = clampLimit(query.limit);
   const offset = Math.max(0, Number.isFinite(query.offset) ? Number(query.offset) : 0);
   const status = query.status;
   const label = query.label?.trim() || undefined;
 
-  const where: string[] = [];
-  const params: unknown[] = [];
+  const where: string[] = ["project_id = ?"];
+  const params: unknown[] = [project.id];
 
   if (status) {
     where.push("status = ?");
@@ -83,7 +91,7 @@ export function listIssues(
     params.push(label);
   }
 
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereSql = `WHERE ${where.join(" AND ")}`;
   const total = (
     db.prepare(`SELECT COUNT(*) AS count FROM issues ${whereSql}`).get(...params) as {
       count: number;
@@ -95,12 +103,12 @@ export function listIssues(
       `SELECT * FROM issues
        ${whereSql}
        ORDER BY id DESC
-       LIMIT ? OFFSET ?`
+       LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset) as IssueRow[];
 
   return {
-    items: rows.map((row) => toIssue(row, baseUrl)),
+    items: rows.map((row) => toIssue(row, project)),
     total,
     limit,
     offset,
@@ -113,63 +121,133 @@ function clampLimit(value: unknown): number {
   return Math.min(Math.floor(n), MAX_PAGE_LIMIT);
 }
 
-export function getIssue(db: Database.Database, baseUrl: string, id: number): Issue | null {
-  const row = db.prepare("SELECT * FROM issues WHERE id = ?").get(id) as IssueRow | undefined;
-  return row ? toIssue(row, baseUrl) : null;
+export function getIssue(
+  db: Database.Database,
+  project: Project,
+  id: number,
+): Issue | null {
+  const row = db
+    .prepare("SELECT * FROM issues WHERE id = ? AND project_id = ?")
+    .get(id, project.id) as IssueRow | undefined;
+  return row ? toIssue(row, project) : null;
 }
 
-export function createIssue(db: Database.Database, baseUrl: string, input: IssueInput): Issue {
+/** Resolve an issue by id across projects (Helix callbacks). */
+export function getIssueById(
+  db: Database.Database,
+  id: number,
+): { issue: Issue; project: Project } | null {
+  const row = db.prepare("SELECT * FROM issues WHERE id = ?").get(id) as IssueRow | undefined;
+  if (!row) return null;
+  const projectRow = db.prepare("SELECT * FROM projects WHERE id = ?").get(row.project_id) as
+    | {
+        id: number;
+        title: string;
+        slug: string;
+        webhook_url: string;
+        label_filter: string;
+        comment_trigger: string;
+        webhook_enabled: number;
+        base_url: string;
+        created_at: number;
+        updated_at: number;
+      }
+    | undefined;
+  if (!projectRow) return null;
+  const project: Project = {
+    id: projectRow.id,
+    title: projectRow.title,
+    slug: projectRow.slug,
+    webhookUrl: projectRow.webhook_url,
+    labelFilter: projectRow.label_filter,
+    commentTrigger: projectRow.comment_trigger,
+    webhookEnabled: projectRow.webhook_enabled === 1,
+    baseUrl: projectRow.base_url,
+    createdAt: projectRow.created_at,
+    updatedAt: projectRow.updated_at,
+  };
+  return { issue: toIssue(row, project), project };
+}
+
+export function createIssue(
+  db: Database.Database,
+  project: Project,
+  input: IssueInput,
+): Issue {
   const now = Date.now();
   const labels = normalizeLabels(input.labels);
   const result = db
     .prepare(
-      `INSERT INTO issues (title, body, status, labels, created_at, updated_at)
-       VALUES (@title, @body, @status, @labels, @now, @now)`
+      `INSERT INTO issues (
+         project_id, title, body, status, labels, source_card_id, projects_callback_url,
+         created_at, updated_at
+       ) VALUES (
+         @projectId, @title, @body, @status, @labels, @sourceCardId, @projectsCallbackUrl,
+         @now, @now
+       )`,
     )
     .run({
+      projectId: project.id,
       title: input.title.trim(),
       body: input.body?.trim() ?? "",
       status: input.status ?? "open",
       labels: JSON.stringify(labels),
+      sourceCardId: input.sourceCardId?.trim() || null,
+      projectsCallbackUrl: input.projectsCallbackUrl?.trim() || null,
       now,
     });
 
-  return getIssue(db, baseUrl, Number(result.lastInsertRowid))!;
+  return getIssue(db, project, Number(result.lastInsertRowid))!;
 }
 
 export function updateIssue(
   db: Database.Database,
-  baseUrl: string,
+  project: Project,
   id: number,
-  patch: IssueUpdate
+  patch: IssueUpdate,
 ): Issue | null {
-  const existing = getIssue(db, baseUrl, id);
+  const existing = getIssue(db, project, id);
   if (!existing) return null;
 
   const title = patch.title !== undefined ? patch.title.trim() : existing.title;
   const body = patch.body !== undefined ? patch.body.trim() : existing.body;
   const status = patch.status ?? existing.status;
   const labels = patch.labels !== undefined ? normalizeLabels(patch.labels) : existing.labels;
+  const sourceCardId =
+    patch.sourceCardId !== undefined
+      ? patch.sourceCardId.trim() || undefined
+      : existing.sourceCardId;
+  const projectsCallbackUrl =
+    patch.projectsCallbackUrl !== undefined
+      ? patch.projectsCallbackUrl.trim() || undefined
+      : existing.projectsCallbackUrl;
   const now = Date.now();
 
   db.prepare(
     `UPDATE issues
-     SET title = @title, body = @body, status = @status, labels = @labels, updated_at = @now
-     WHERE id = @id`
+     SET title = @title, body = @body, status = @status, labels = @labels,
+         source_card_id = @sourceCardId, projects_callback_url = @projectsCallbackUrl,
+         updated_at = @now
+     WHERE id = @id AND project_id = @projectId`,
   ).run({
     id,
+    projectId: project.id,
     title,
     body,
     status,
     labels: JSON.stringify(labels),
+    sourceCardId: sourceCardId ?? null,
+    projectsCallbackUrl: projectsCallbackUrl ?? null,
     now,
   });
 
-  return getIssue(db, baseUrl, id);
+  return getIssue(db, project, id);
 }
 
-export function deleteIssue(db: Database.Database, id: number): boolean {
-  const result = db.prepare("DELETE FROM issues WHERE id = ?").run(id);
+export function deleteIssue(db: Database.Database, projectId: number, id: number): boolean {
+  const result = db
+    .prepare("DELETE FROM issues WHERE id = ? AND project_id = ?")
+    .run(id, projectId);
   return result.changes > 0;
 }
 
@@ -181,27 +259,49 @@ export function labelWasAdded(oldLabels: string[], newLabels: string[], label: s
   return !oldLabels.includes(label) && newLabels.includes(label);
 }
 
-export function issueToWebhookPayload(issue: Issue, trackerUrl: string): { title: string; body: string; labels: string[]; external: { trackerUrl: string; issueId: number } } {
+export function issueToWebhookPayload(
+  issue: Issue,
+  project: Project,
+): {
+  title: string;
+  body: string;
+  labels: string[];
+  external: {
+    trackerUrl: string;
+    issueId: number;
+    projectId: number;
+    projectSlug: string;
+  };
+} {
   return {
     title: issue.title,
     body: issue.body,
     labels: issue.labels,
     external: {
-      trackerUrl: trackerUrl.replace(/\/$/, ""),
+      trackerUrl: project.baseUrl.replace(/\/$/, ""),
       issueId: issue.id,
+      projectId: project.id,
+      projectSlug: project.slug,
     },
   };
 }
 
-export function listDeliveries(db: Database.Database, limit = 50): import("./types.js").WebhookDelivery[] {
+export function listDeliveries(
+  db: Database.Database,
+  projectId: number,
+  limit = 50,
+): import("./types.js").WebhookDelivery[] {
   const rows = db
     .prepare(
-      `SELECT id, issue_id, url, payload, status_code, response_body, success, attempts, error, created_at
-       FROM webhook_deliveries
-       ORDER BY id DESC
-       LIMIT ?`
+      `SELECT d.id, d.issue_id, d.url, d.payload, d.status_code, d.response_body, d.success,
+              d.attempts, d.error, d.created_at
+       FROM webhook_deliveries d
+       INNER JOIN issues i ON i.id = d.issue_id
+       WHERE i.project_id = ?
+       ORDER BY d.id DESC
+       LIMIT ?`,
     )
-    .all(limit) as {
+    .all(projectId, limit) as {
     id: number;
     issue_id: number;
     url: string;
@@ -228,13 +328,28 @@ export function listDeliveries(db: Database.Database, limit = 50): import("./typ
   }));
 }
 
-export function deleteDelivery(db: Database.Database, id: number): boolean {
-  const result = db.prepare("DELETE FROM webhook_deliveries WHERE id = ?").run(id);
+export function deleteDelivery(
+  db: Database.Database,
+  projectId: number,
+  id: number,
+): boolean {
+  const result = db
+    .prepare(
+      `DELETE FROM webhook_deliveries
+       WHERE id = ?
+         AND issue_id IN (SELECT id FROM issues WHERE project_id = ?)`,
+    )
+    .run(id, projectId);
   return result.changes > 0;
 }
 
-export function clearDeliveries(db: Database.Database): number {
-  const result = db.prepare("DELETE FROM webhook_deliveries").run();
+export function clearDeliveries(db: Database.Database, projectId: number): number {
+  const result = db
+    .prepare(
+      `DELETE FROM webhook_deliveries
+       WHERE issue_id IN (SELECT id FROM issues WHERE project_id = ?)`,
+    )
+    .run(projectId);
   return result.changes;
 }
 
@@ -249,14 +364,14 @@ export function recordDelivery(
     success: boolean;
     attempts: number;
     error: string | null;
-  }
+  },
 ): import("./types.js").WebhookDelivery {
   const now = Date.now();
   const result = db
     .prepare(
       `INSERT INTO webhook_deliveries
        (issue_id, url, payload, status_code, response_body, success, attempts, error, created_at)
-       VALUES (@issueId, @url, @payload, @statusCode, @responseBody, @success, @attempts, @error, @now)`
+       VALUES (@issueId, @url, @payload, @statusCode, @responseBody, @success, @attempts, @error, @now)`,
     )
     .run({
       issueId: entry.issueId,
@@ -271,8 +386,7 @@ export function recordDelivery(
     });
 
   const id = Number(result.lastInsertRowid);
-  const deliveries = listDeliveries(db, 1);
-  return deliveries.find((d) => d.id === id) ?? {
+  return {
     id,
     issueId: entry.issueId,
     url: entry.url,

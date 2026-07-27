@@ -11,16 +11,20 @@ import type {
   IssueHelixActivity,
   IssueListResult,
   IssueStatus,
-  AppConfig,
   HelixRunSummary,
+  Project,
+  ProjectInput,
+  ProjectUpdate,
   PullRequest,
   PullRequestReview,
   PullRequestStatus,
   WebhookDelivery,
 } from "../../src/types";
-import { api, formatStatus, formatTime } from "./api";
+import type { HelixStatus } from "../../src/helixStatus";
+import { api, formatStatus, formatTime, projectApiPath } from "./api";
 
 type View = "issues" | "pull-requests";
+type Screen = "workspace" | "settings" | "new-project";
 type IssueDetailData = Issue & { helix?: IssueHelixActivity };
 type PullRequestDetailData = PullRequest & {
   reviews: PullRequestReview[];
@@ -32,40 +36,189 @@ type PullRequestDetailData = PullRequest & {
   };
 };
 
+function parseScreen(value: string | null): Screen {
+  return value === "settings" || value === "new-project" ? value : "workspace";
+}
+
 export function App() {
   const deepLink = new URLSearchParams(location.search);
   const initialPr = positiveNumber(deepLink.get("pr"));
   const initialIssue = positiveNumber(deepLink.get("issue"));
+  const initialProjectSlug = deepLink.get("project");
   const [view, setView] = useState<View>(initialPr ? "pull-requests" : "issues");
+  const [screen, setScreen] = useState<Screen>(parseScreen(deepLink.get("screen")));
   const [selectedIssueId, setSelectedIssueId] = useState<number | null>(initialIssue);
   const [selectedPrId, setSelectedPrId] = useState<number | null>(initialPr);
-  const [dialog, setDialog] = useState<"issue" | "settings" | null>(null);
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(initialProjectSlug);
+  const [dialog, setDialog] = useState<"issue" | null>(null);
   const [toast, setToast] = useState("");
-  const config = useQuery({
-    queryKey: ["config"],
-    queryFn: () => api<AppConfig>("/api/config"),
+  const [prProjectResolved, setPrProjectResolved] = useState(!initialPr || Boolean(initialProjectSlug));
+  const projects = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => api<Project[]>("/api/projects"),
   });
+  const selectedProject = projects.data?.find((item) => item.slug === selectedSlug)
+    ?? (prProjectResolved ? projects.data?.[0] : null)
+    ?? null;
+
+  useEffect(() => {
+    if (!initialPr || initialProjectSlug || !projects.data?.length) {
+      if (!initialPr || initialProjectSlug) setPrProjectResolved(true);
+      return;
+    }
+    let cancelled = false;
+    api<{ project: { slug: string } }>(`/api/pull-requests/${initialPr}`)
+      .then((data) => {
+        if (!cancelled && data.project?.slug) setSelectedSlug(data.project.slug);
+      })
+      .catch(() => {
+        /* fall back to default project selection below */
+      })
+      .finally(() => {
+        if (!cancelled) setPrProjectResolved(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialPr, initialProjectSlug, projects.data]);
+
+  useEffect(() => {
+    if (!projects.data?.length) {
+      if (screen === "settings") setScreen("new-project");
+      return;
+    }
+    if (!prProjectResolved) return;
+    if (!selectedSlug || !projects.data.some((item) => item.slug === selectedSlug)) {
+      setSelectedSlug(projects.data[0].slug);
+    }
+  }, [projects.data, selectedSlug, screen, prProjectResolved]);
+
+  useEffect(() => {
+    if (!projects.data?.length) {
+      syncAppUrl({
+        project: null,
+        screen: screen === "new-project" ? "new-project" : null,
+        issue: null,
+        pr: null,
+      });
+      return;
+    }
+    if (!selectedProject) return;
+    syncAppUrl({
+      project: selectedProject.slug,
+      screen: screen === "workspace" ? null : screen,
+      issue: screen === "workspace" && view === "issues" ? selectedIssueId : null,
+      pr: screen === "workspace" && view === "pull-requests" ? selectedPrId : null,
+    });
+  }, [projects.data, selectedProject, screen, view, selectedIssueId, selectedPrId]);
+
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 3_200);
   };
+  const selectProject = (slug: string) => {
+    setSelectedSlug(slug);
+    setSelectedIssueId(null);
+    setSelectedPrId(null);
+    setScreen("workspace");
+  };
+  const backToWorkspace = () => setScreen("workspace");
+
+  if (projects.isPending) {
+    return <p className="query-state app-loading">Loading projects…</p>;
+  }
+  if (projects.isError) {
+    return <p className="query-state react-error">{projects.error.message}</p>;
+  }
+  if (!projects.data?.length) {
+    return (
+      <>
+        {screen === "new-project" ? (
+          <NewProjectScreen
+            onBack={() => setScreen("workspace")}
+            onCreated={(project) => {
+              setSelectedSlug(project.slug);
+              setScreen("workspace");
+              showToast(`Project "${project.title}" created`);
+            }}
+          />
+        ) : (
+          <EmptyProjectsState onCreate={() => setScreen("new-project")} />
+        )}
+        {toast && <div className="toast" role="status">{toast}</div>}
+      </>
+    );
+  }
+  if (!selectedProject) {
+    return <p className="query-state">Loading project…</p>;
+  }
+
+  if (screen === "settings") {
+    return (
+      <>
+        <SettingsScreen
+          project={selectedProject}
+          onBack={backToWorkspace}
+          onSaved={(updated) => {
+            setSelectedSlug(updated.slug);
+            setScreen("workspace");
+            showToast("Settings saved");
+          }}
+          onDeleted={() => {
+            setSelectedIssueId(null);
+            setSelectedPrId(null);
+            setSelectedSlug(null);
+            setScreen("workspace");
+            showToast("Project deleted");
+          }}
+        />
+        {toast && <div className="toast" role="status">{toast}</div>}
+      </>
+    );
+  }
+
+  if (screen === "new-project") {
+    return (
+      <>
+        <NewProjectScreen
+          onBack={backToWorkspace}
+          onCreated={(project) => {
+            selectProject(project.slug);
+            showToast(`Project "${project.title}" created`);
+          }}
+        />
+        {toast && <div className="toast" role="status">{toast}</div>}
+      </>
+    );
+  }
+
   return (
     <>
       <Header
         view={view}
-        onView={setView}
-        onSettings={() => setDialog("settings")}
+        projects={projects.data}
+        project={selectedProject}
+        onView={(next) => {
+          setView(next);
+          if (next === "issues") setSelectedPrId(null);
+          else setSelectedIssueId(null);
+        }}
+        onSelectProject={selectProject}
+        onNewProject={() => setScreen("new-project")}
+        onSettings={() => setScreen("settings")}
         onNewIssue={() => setDialog("issue")}
       />
       {view === "issues" ? (
         <IssuesWorkspace
+          project={selectedProject}
           selectedId={selectedIssueId}
           onSelect={setSelectedIssueId}
-          triggerLabel={config.data?.labelFilter || "trigger"}
+          triggerLabel={selectedProject.labelFilter || "trigger"}
           showToast={showToast}
         />
       ) : (
         <PullRequestsWorkspace
+          project={selectedProject}
           selectedId={selectedPrId}
           onSelect={setSelectedPrId}
           showToast={showToast}
@@ -73,22 +226,13 @@ export function App() {
       )}
       {dialog === "issue" && (
         <NewIssueDialog
+          project={selectedProject}
           onClose={() => setDialog(null)}
           onCreated={(issue, message) => {
             setDialog(null);
             setView("issues");
             setSelectedIssueId(issue.id);
             showToast(message);
-          }}
-        />
-      )}
-      {dialog === "settings" && config.data && (
-        <SettingsDialog
-          config={config.data}
-          onClose={() => setDialog(null)}
-          onSaved={() => {
-            setDialog(null);
-            showToast("Settings saved");
           }}
         />
       )}
@@ -99,25 +243,89 @@ export function App() {
 
 function Header({
   view,
+  projects,
+  project,
   onView,
+  onSelectProject,
+  onNewProject,
   onSettings,
   onNewIssue,
 }: {
   view: View;
+  projects: Project[];
+  project: Project;
   onView: (view: View) => void;
+  onSelectProject: (slug: string) => void;
+  onNewProject: () => void;
   onSettings: () => void;
   onNewIssue: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [menuOpen]);
+
   return (
     <header className="app-header">
       <div className="brand">
         <BrandMark />
         <div className="brand-text">
-          <h1>Acme Issues</h1>
-          <p className="brand-tagline">Local issue tracker with outbound webhooks</p>
+          <div className="project-selector" ref={menuRef}>
+            <button
+              type="button"
+              className="project-selector-btn"
+              aria-haspopup="listbox"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <h1>{project.title}</h1>
+              <Icon name="chevron-down" className="project-selector-chevron" />
+            </button>
+            {menuOpen && (
+              <div className="project-dropdown" role="listbox" aria-label="Projects">
+                {projects.map((item) => (
+                  <button
+                    type="button"
+                    key={item.slug}
+                    role="option"
+                    aria-selected={item.slug === project.slug}
+                    className={`project-dropdown-item ${item.slug === project.slug ? "active" : ""}`}
+                    onClick={() => {
+                      onSelectProject(item.slug);
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <span className="project-dropdown-title">{item.title}</span>
+                    <span className="project-dropdown-slug">{item.slug}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="project-dropdown-item project-dropdown-new"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onNewProject();
+                  }}
+                >
+                  <Icon name="plus" /> New project
+                </button>
+              </div>
+            )}
+          </div>
+          <p className="brand-tagline">Acme Issues · Local issue tracker with outbound webhooks</p>
         </div>
       </div>
       <div className="header-actions">
+        <HelixTargetStatus project={project} />
         <div className="view-switcher" role="navigation" aria-label="Workspace">
           <button
             className={`view-switch ${view === "issues" ? "active" : ""}`}
@@ -143,12 +351,47 @@ function Header({
   );
 }
 
+function HelixTargetStatus({ project }: { project: Project }) {
+  const helix = useQuery({
+    queryKey: ["helix-status", project.slug, project.webhookUrl, project.webhookEnabled],
+    queryFn: () => api<HelixStatus>(projectApiPath(project.slug, "/helix")),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+  });
+  const status = helix.data?.status ?? (helix.isError ? "offline" : null);
+  const label =
+    status === "online"
+      ? "Helix · online"
+      : status === "offline"
+        ? "Helix · offline"
+        : status === "unconfigured"
+          ? "Connect Helix"
+          : "Helix · …";
+  const title = helix.data?.healthUrl
+    ? `${helix.data.healthUrl}${project.webhookEnabled ? "" : " · webhooks disabled"}`
+    : "Set a Helix webhook URL ending in /runs in project settings";
+
+  return (
+    <div
+      className={`helix-target-status ${status ?? "pending"}${project.webhookEnabled ? "" : " disabled"}`}
+      title={title}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="helix-target-dot" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
 function IssuesWorkspace({
+  project,
   selectedId,
   onSelect,
   triggerLabel,
   showToast,
 }: {
+  project: Project;
   selectedId: number | null;
   onSelect: (id: number | null) => void;
   triggerLabel: string;
@@ -159,14 +402,16 @@ function IssuesWorkspace({
   const [label, setLabel] = useState("");
   const [offset, setOffset] = useState(0);
   const query = useQuery({
-    queryKey: ["issues", status, label, offset],
+    queryKey: ["issues", project.slug, status, label, offset],
     queryFn: () => api<IssueListResult>(
-      `/api/issues?limit=25&offset=${offset}&status=${status}&label=${encodeURIComponent(label)}`,
+      `${projectApiPath(project.slug, "/issues")}?limit=25&offset=${offset}&status=${status}&label=${encodeURIComponent(label)}`,
     ),
   });
   const deliveries = useQuery({
-    queryKey: ["deliveries"],
-    queryFn: () => api<WebhookDelivery[]>("/api/webhooks/deliveries?limit=50"),
+    queryKey: ["deliveries", project.slug],
+    queryFn: () => api<WebhookDelivery[]>(
+      `${projectApiPath(project.slug, "/webhooks/deliveries")}?limit=50`,
+    ),
   });
 
   return (
@@ -255,22 +500,25 @@ function IssuesWorkspace({
         )}
       </section>
       <IssueDetail
+        project={project}
         id={selectedId}
         onDeleted={() => onSelect(null)}
         showToast={showToast}
-        onChanged={() => queryClient.invalidateQueries({ queryKey: ["issues"] })}
+        onChanged={() => queryClient.invalidateQueries({ queryKey: ["issues", project.slug] })}
       />
-      <DeliveriesPanel query={deliveries} showToast={showToast} />
+      <DeliveriesPanel project={project} query={deliveries} showToast={showToast} />
     </main>
   );
 }
 
 function IssueDetail({
+  project,
   id,
   onChanged,
   onDeleted,
   showToast,
 }: {
+  project: Project;
   id: number | null;
   onChanged: () => void;
   onDeleted: () => void;
@@ -280,8 +528,8 @@ function IssueDetail({
   const [watchUntil, setWatchUntil] = useState(Date.now() + 120_000);
   useEffect(() => setWatchUntil(Date.now() + 120_000), [id]);
   const issue = useQuery({
-    queryKey: ["issue", id],
-    queryFn: () => api<IssueDetailData>(`/api/issues/${id}`),
+    queryKey: ["issue", project.slug, id],
+    queryFn: () => api<IssueDetailData>(projectApiPath(project.slug, `/issues/${id}`)),
     enabled: id !== null,
     refetchInterval: (query) => (
       query.state.data?.status === "in_progress"
@@ -290,20 +538,20 @@ function IssueDetail({
     ) ? 2_000 : false,
   });
   const comments = useQuery({
-    queryKey: ["comments", id],
-    queryFn: () => api<IssueComment[]>(`/api/issues/${id}/comments`),
+    queryKey: ["comments", project.slug, id],
+    queryFn: () => api<IssueComment[]>(projectApiPath(project.slug, `/issues/${id}/comments`)),
     enabled: id !== null,
   });
   const invalidate = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["issue", id] }),
-      queryClient.invalidateQueries({ queryKey: ["comments", id] }),
-      queryClient.invalidateQueries({ queryKey: ["deliveries"] }),
+      queryClient.invalidateQueries({ queryKey: ["issue", project.slug, id] }),
+      queryClient.invalidateQueries({ queryKey: ["comments", project.slug, id] }),
+      queryClient.invalidateQueries({ queryKey: ["deliveries", project.slug] }),
     ]);
     onChanged();
   };
   const patch = useMutation({
-    mutationFn: (body: Partial<Issue>) => api<{ issue: Issue }>(`/api/issues/${id}`, {
+    mutationFn: (body: Partial<Issue>) => api<{ issue: Issue }>(projectApiPath(project.slug, `/issues/${id}`), {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
@@ -313,7 +561,7 @@ function IssueDetail({
     },
   });
   const trigger = useMutation({
-    mutationFn: () => api(`/api/issues/${id}/trigger`, { method: "POST" }),
+    mutationFn: () => api(projectApiPath(project.slug, `/issues/${id}/trigger`), { method: "POST" }),
     onSuccess: () => {
       setWatchUntil(Date.now() + 120_000);
       showToast("Webhook delivered");
@@ -321,7 +569,7 @@ function IssueDetail({
     },
   });
   const addComment = useMutation({
-    mutationFn: (body: string) => api(`/api/issues/${id}/comments`, {
+    mutationFn: (body: string) => api(projectApiPath(project.slug, `/issues/${id}/comments`), {
       method: "POST",
       body: JSON.stringify({ body, author: "user" }),
     }),
@@ -333,7 +581,7 @@ function IssueDetail({
   });
   const updateComment = useMutation({
     mutationFn: ({ commentId, body }: { commentId: number; body: string }) =>
-      api(`/api/issues/${id}/comments/${commentId}`, {
+      api(projectApiPath(project.slug, `/issues/${id}/comments/${commentId}`), {
         method: "PATCH",
         body: JSON.stringify({ body }),
       }),
@@ -343,7 +591,7 @@ function IssueDetail({
     },
   });
   const deleteComment = useMutation({
-    mutationFn: (commentId: number) => api(`/api/issues/${id}/comments/${commentId}`, {
+    mutationFn: (commentId: number) => api(projectApiPath(project.slug, `/issues/${id}/comments/${commentId}`), {
       method: "DELETE",
     }),
     onSuccess: () => {
@@ -352,9 +600,9 @@ function IssueDetail({
     },
   });
   const deleteIssue = useMutation({
-    mutationFn: () => api(`/api/issues/${id}`, { method: "DELETE" }),
+    mutationFn: () => api(projectApiPath(project.slug, `/issues/${id}`), { method: "DELETE" }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["issues"] });
+      await queryClient.invalidateQueries({ queryKey: ["issues", project.slug] });
       onDeleted();
       showToast("Issue deleted");
     },
@@ -571,25 +819,27 @@ function HelixRunBanner({ run }: { run: HelixRunSummary }) {
 }
 
 function DeliveriesPanel({
+  project,
   query,
   showToast,
 }: {
+  project: Project;
   query: UseQueryResult<WebhookDelivery[], Error>;
   showToast: (message: string) => void;
 }) {
   const client = useQueryClient();
   const clear = useMutation({
-    mutationFn: () => api("/api/webhooks/deliveries", { method: "DELETE" }),
+    mutationFn: () => api(projectApiPath(project.slug, "/webhooks/deliveries"), { method: "DELETE" }),
     onSuccess: () => {
       showToast("Delivery logs cleared");
-      void client.invalidateQueries({ queryKey: ["deliveries"] });
+      void client.invalidateQueries({ queryKey: ["deliveries", project.slug] });
     },
   });
   const remove = useMutation({
-    mutationFn: (id: number) => api(`/api/webhooks/deliveries/${id}`, { method: "DELETE" }),
+    mutationFn: (id: number) => api(projectApiPath(project.slug, `/webhooks/deliveries/${id}`), { method: "DELETE" }),
     onSuccess: () => {
       showToast("Delivery removed");
-      void client.invalidateQueries({ queryKey: ["deliveries"] });
+      void client.invalidateQueries({ queryKey: ["deliveries", project.slug] });
     },
   });
   return (
@@ -635,10 +885,12 @@ function DeliveriesPanel({
 }
 
 function PullRequestsWorkspace({
+  project,
   selectedId,
   onSelect,
   showToast,
 }: {
+  project: Project;
   selectedId: number | null;
   onSelect: (id: number | null) => void;
   showToast: (message: string) => void;
@@ -646,16 +898,18 @@ function PullRequestsWorkspace({
   const client = useQueryClient();
   const [status, setStatus] = useState<PullRequestStatus | "">("");
   const list = useQuery({
-    queryKey: ["pull-requests", status],
-    queryFn: () => api<PullRequest[]>(`/api/pull-requests?status=${status}`),
+    queryKey: ["pull-requests", project.slug, status],
+    queryFn: () => api<PullRequest[]>(
+      `${projectApiPath(project.slug, "/pull-requests")}?status=${status}`,
+    ),
   });
   const clear = useMutation({
-    mutationFn: () => api<{ deleted: number }>("/api/pull-requests", { method: "DELETE" }),
+    mutationFn: () => api<{ deleted: number }>(projectApiPath(project.slug, "/pull-requests"), { method: "DELETE" }),
     onSuccess: (result) => {
       onSelect(null);
       showToast(result.deleted === 1 ? "Deleted 1 pull request" : `Deleted ${result.deleted} pull requests`);
-      void client.invalidateQueries({ queryKey: ["pull-requests"] });
-      void client.invalidateQueries({ queryKey: ["pull-request"] });
+      void client.invalidateQueries({ queryKey: ["pull-requests", project.slug] });
+      void client.invalidateQueries({ queryKey: ["pull-request", project.slug] });
     },
     onError: (error) => showToast(error.message),
   });
@@ -717,6 +971,7 @@ function PullRequestsWorkspace({
         </ul>
       </section>
       <PullRequestDetail
+        project={project}
         id={selectedId}
         showToast={showToast}
         onDeleted={() => onSelect(null)}
@@ -726,40 +981,42 @@ function PullRequestsWorkspace({
 }
 
 function PullRequestDetail({
+  project,
   id,
   showToast,
   onDeleted,
 }: {
+  project: Project;
   id: number | null;
   showToast: (message: string) => void;
   onDeleted: () => void;
 }) {
   const client = useQueryClient();
   const detail = useQuery({
-    queryKey: ["pull-request", id],
-    queryFn: () => api<PullRequestDetailData>(`/api/pull-requests/${id}`),
+    queryKey: ["pull-request", project.slug, id],
+    queryFn: () => api<PullRequestDetailData>(projectApiPath(project.slug, `/pull-requests/${id}`)),
     enabled: id !== null,
     refetchInterval: (query) => (
       query.state.data?.status === "reviewing" || Boolean(query.state.data?.helix?.activeRun)
     ) ? 2_000 : false,
   });
   const diff = useQuery({
-    queryKey: ["pull-request-diff", id],
-    queryFn: () => api<{ diff: string }>(`/api/pull-requests/${id}/diff`),
+    queryKey: ["pull-request-diff", project.slug, id],
+    queryFn: () => api<{ diff: string }>(projectApiPath(project.slug, `/pull-requests/${id}/diff`)),
     enabled: id !== null,
     staleTime: Infinity,
   });
   const invalidate = async () => {
     await Promise.all([
-      client.invalidateQueries({ queryKey: ["pull-request", id] }),
-      client.invalidateQueries({ queryKey: ["pull-requests"] }),
-      client.invalidateQueries({ queryKey: ["issue"] }),
-      client.invalidateQueries({ queryKey: ["comments"] }),
-      client.invalidateQueries({ queryKey: ["issues"] }),
+      client.invalidateQueries({ queryKey: ["pull-request", project.slug, id] }),
+      client.invalidateQueries({ queryKey: ["pull-requests", project.slug] }),
+      client.invalidateQueries({ queryKey: ["issue", project.slug] }),
+      client.invalidateQueries({ queryKey: ["comments", project.slug] }),
+      client.invalidateQueries({ queryKey: ["issues", project.slug] }),
     ]);
   };
   const review = useMutation({
-    mutationFn: () => api(`/api/pull-requests/${id}/review`, { method: "POST" }),
+    mutationFn: () => api(projectApiPath(project.slug, `/pull-requests/${id}/review`), { method: "POST" }),
     onSuccess: () => {
       showToast("Review requested");
       void invalidate();
@@ -767,7 +1024,7 @@ function PullRequestDetail({
     onError: (error) => showToast(error.message),
   });
   const addressFeedback = useMutation({
-    mutationFn: () => api(`/api/pull-requests/${id}/address-feedback`, { method: "POST" }),
+    mutationFn: () => api(projectApiPath(project.slug, `/pull-requests/${id}/address-feedback`), { method: "POST" }),
     onSuccess: () => {
       showToast("Helix continuation requested to address review feedback");
       void invalidate();
@@ -776,7 +1033,7 @@ function PullRequestDetail({
   });
   const merge = useMutation({
     mutationFn: () => api<{ pullRequest: PullRequest; mergeCommitSha: string }>(
-      `/api/pull-requests/${id}/merge`,
+      projectApiPath(project.slug, `/pull-requests/${id}/merge`),
       { method: "POST" },
     ),
     onSuccess: (result) => {
@@ -786,7 +1043,7 @@ function PullRequestDetail({
     onError: (error) => showToast(error.message),
   });
   const recordMerged = useMutation({
-    mutationFn: (mergeCommitSha?: string) => api(`/api/pull-requests/${id}`, {
+    mutationFn: (mergeCommitSha?: string) => api(projectApiPath(project.slug, `/pull-requests/${id}`), {
       method: "PATCH",
       body: JSON.stringify({ status: "merged", mergeCommitSha }),
     }),
@@ -797,12 +1054,12 @@ function PullRequestDetail({
     onError: (error) => showToast(error.message),
   });
   const remove = useMutation({
-    mutationFn: () => api(`/api/pull-requests/${id}`, { method: "DELETE" }),
+    mutationFn: () => api(projectApiPath(project.slug, `/pull-requests/${id}`), { method: "DELETE" }),
     onSuccess: () => {
       showToast(`Pull request #${id} deleted`);
       onDeleted();
-      void client.invalidateQueries({ queryKey: ["pull-requests"] });
-      void client.invalidateQueries({ queryKey: ["pull-request"] });
+      void client.invalidateQueries({ queryKey: ["pull-requests", project.slug] });
+      void client.invalidateQueries({ queryKey: ["pull-request", project.slug] });
     },
     onError: (error) => showToast(error.message),
   });
@@ -925,7 +1182,7 @@ function PullRequestDetail({
           <div><dt>Origin</dt><dd>{pr.origin} · {pr.author}</dd></div>
           <div>
             <dt>Linked issue</dt>
-            <dd>{pr.issueId ? <a href={`/?issue=${pr.issueId}`}>Issue #{pr.issueId}</a> : "None"}</dd>
+            <dd>{pr.issueId ? <a href={`/?project=${encodeURIComponent(project.slug)}&issue=${pr.issueId}`}>Issue #{pr.issueId}</a> : "None"}</dd>
           </div>
         </dl>
         <section className="pr-review-section">
@@ -980,23 +1237,25 @@ function PullRequestDetail({
 }
 
 function NewIssueDialog({
+  project,
   onClose,
   onCreated,
 }: {
+  project: Project;
   onClose: () => void;
   onCreated: (issue: Issue, message: string) => void;
 }) {
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: (payload: { title: string; body: string; labels: string[] }) =>
-      api<{ issue: Issue; delivery: WebhookDelivery | null }>("/api/issues", {
+      api<{ issue: Issue; delivery: WebhookDelivery | null }>(projectApiPath(project.slug, "/issues"), {
         method: "POST",
         body: JSON.stringify(payload),
       }),
     onSuccess: async (result) => {
       await Promise.all([
-        client.invalidateQueries({ queryKey: ["issues"] }),
-        client.invalidateQueries({ queryKey: ["deliveries"] }),
+        client.invalidateQueries({ queryKey: ["issues", project.slug] }),
+        client.invalidateQueries({ queryKey: ["deliveries", project.slug] }),
       ]);
       onCreated(
         result.issue,
@@ -1039,59 +1298,232 @@ function NewIssueDialog({
   );
 }
 
-function SettingsDialog({
-  config,
-  onClose,
+function SettingsScreen({
+  project,
+  onBack,
   onSaved,
+  onDeleted,
 }: {
-  config: AppConfig;
-  onClose: () => void;
-  onSaved: () => void;
+  project: Project;
+  onBack: () => void;
+  onSaved: (project: Project) => void;
+  onDeleted: () => void;
 }) {
   const client = useQueryClient();
+  const [deleteConfirm, setDeleteConfirm] = useState("");
   const save = useMutation({
-    mutationFn: (payload: Partial<AppConfig>) => api<AppConfig>("/api/config", {
+    mutationFn: (payload: ProjectUpdate) => api<Project>(projectApiPath(project.slug), {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
-    onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: ["config"] });
-      onSaved();
+    onSuccess: async (updated) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["projects"] }),
+        client.invalidateQueries({ queryKey: ["project", project.slug] }),
+      ]);
+      onSaved(updated);
     },
   });
+  const remove = useMutation({
+    mutationFn: () => api(projectApiPath(project.slug), { method: "DELETE" }),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["projects"] });
+      onDeleted();
+    },
+  });
+  const deleteAllowed = deleteConfirm === project.slug || deleteConfirm === project.title;
   return (
-    <Modal onClose={onClose}>
+    <FormScreen
+      title="Project settings"
+      subtitle={`Configure webhooks and Helix integration for ${project.title}.`}
+      onBack={onBack}
+    >
       <form
+        className="form-screen-form"
         onSubmit={(event) => {
           event.preventDefault();
           const form = new FormData(event.currentTarget);
           save.mutate({
+            title: String(form.get("title") || ""),
+            slug: String(form.get("slug") || ""),
             webhookUrl: String(form.get("webhookUrl") || ""),
             labelFilter: String(form.get("labelFilter") || ""),
             commentTrigger: String(form.get("commentTrigger") || ""),
             webhookEnabled: form.get("webhookEnabled") === "on",
+            baseUrl: String(form.get("baseUrl") || ""),
           });
         }}
       >
-        <h2>Settings</h2>
-        <p className="dialog-subtitle">Configure outbound webhooks and Helix integration.</p>
+        <Field label="Title">
+          <input name="title" className="input" defaultValue={project.title} required autoComplete="off" />
+        </Field>
+        <Field label="Slug">
+          <input name="slug" className="input" defaultValue={project.slug} required autoComplete="off" />
+        </Field>
+        <Field label="Callback URL (base URL)">
+          <input name="baseUrl" className="input" defaultValue={project.baseUrl} placeholder="http://127.0.0.1:8320" autoComplete="off" />
+        </Field>
         <Field label="Webhook URL">
-          <input name="webhookUrl" className="input" defaultValue={config.webhookUrl} placeholder="http://127.0.0.1:8319/runs" autoComplete="off" />
+          <input name="webhookUrl" className="input" defaultValue={project.webhookUrl} placeholder="http://127.0.0.1:8319/runs" autoComplete="off" />
         </Field>
         <Field label="Label filter">
-          <input name="labelFilter" className="input" defaultValue={config.labelFilter} placeholder="trigger" autoComplete="off" />
+          <input name="labelFilter" className="input" defaultValue={project.labelFilter} placeholder="trigger" autoComplete="off" />
         </Field>
         <Field label="Continuation comment command">
-          <input name="commentTrigger" className="input" defaultValue={config.commentTrigger} placeholder="/helix" autoComplete="off" />
+          <input name="commentTrigger" className="input" defaultValue={project.commentTrigger} placeholder="/helix" autoComplete="off" />
         </Field>
         <label className="checkbox-row">
-          <input name="webhookEnabled" type="checkbox" defaultChecked={config.webhookEnabled} />
+          <input name="webhookEnabled" type="checkbox" defaultChecked={project.webhookEnabled} />
           <span>Enable webhooks</span>
         </label>
         <MutationError mutation={save} />
-        <DialogActions onClose={onClose} busy={save.isPending} submitLabel="Save settings" />
+        <FormActions onCancel={onBack} busy={save.isPending} submitLabel="Save settings" />
       </form>
-    </Modal>
+      <section className="danger-zone">
+        <h3>Delete project</h3>
+        <p className="danger-zone-warning">
+          Permanently deletes <strong>{project.title}</strong> and cascade-deletes all issues,
+          pull requests, webhook deliveries, and review records. This cannot be undone.
+        </p>
+        <Field label={`Type "${project.slug}" or "${project.title}" to confirm`}>
+          <input
+            className="input"
+            value={deleteConfirm}
+            onChange={(event) => setDeleteConfirm(event.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+        <MutationError mutation={remove} />
+        <button
+          type="button"
+          className="btn btn-danger"
+          disabled={!deleteAllowed || remove.isPending || save.isPending}
+          onClick={() => {
+            if (!deleteAllowed) return;
+            if (!confirm(`Delete project "${project.title}" and all its data?`)) return;
+            remove.mutate();
+          }}
+        >
+          {remove.isPending ? "Deleting…" : "Delete project"}
+        </button>
+      </section>
+    </FormScreen>
+  );
+}
+
+function NewProjectScreen({
+  onBack,
+  onCreated,
+}: {
+  onBack: () => void;
+  onCreated: (project: Project) => void;
+}) {
+  const client = useQueryClient();
+  const create = useMutation({
+    mutationFn: (payload: ProjectInput) => api<Project>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    onSuccess: async (project) => {
+      await client.invalidateQueries({ queryKey: ["projects"] });
+      onCreated(project);
+    },
+  });
+  return (
+    <FormScreen
+      title="New project"
+      subtitle="Create a workspace with its own issues, PRs, and webhook settings."
+      onBack={onBack}
+    >
+      <form
+        className="form-screen-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const slug = String(form.get("slug") || "").trim();
+          const webhookUrl = String(form.get("webhookUrl") || "").trim();
+          const labelFilter = String(form.get("labelFilter") || "").trim();
+          const commentTrigger = String(form.get("commentTrigger") || "").trim();
+          const baseUrl = String(form.get("baseUrl") || "").trim();
+          create.mutate({
+            title: String(form.get("title") || ""),
+            ...(slug ? { slug } : {}),
+            ...(webhookUrl ? { webhookUrl } : {}),
+            ...(labelFilter ? { labelFilter } : {}),
+            ...(commentTrigger ? { commentTrigger } : {}),
+            ...(baseUrl ? { baseUrl } : {}),
+            webhookEnabled: form.get("webhookEnabled") === "on",
+          });
+        }}
+      >
+        <Field label="Title">
+          <input name="title" className="input" required autoFocus autoComplete="off" placeholder="Acme Todo" />
+        </Field>
+        <Field label="Slug (optional)">
+          <input name="slug" className="input" autoComplete="off" placeholder="acme-todo" />
+        </Field>
+        <Field label="Callback URL (optional)">
+          <input name="baseUrl" className="input" autoComplete="off" placeholder="http://127.0.0.1:8320" />
+        </Field>
+        <Field label="Webhook URL (optional)">
+          <input name="webhookUrl" className="input" autoComplete="off" placeholder="http://127.0.0.1:8319/runs" />
+        </Field>
+        <Field label="Label filter (optional)">
+          <input name="labelFilter" className="input" autoComplete="off" placeholder="trigger" />
+        </Field>
+        <Field label="Continuation command (optional)">
+          <input name="commentTrigger" className="input" autoComplete="off" placeholder="/helix" />
+        </Field>
+        <label className="checkbox-row">
+          <input name="webhookEnabled" type="checkbox" defaultChecked />
+          <span>Enable webhooks</span>
+        </label>
+        <MutationError mutation={create} />
+        <FormActions onCancel={onBack} busy={create.isPending} submitLabel="Create project" />
+      </form>
+    </FormScreen>
+  );
+}
+
+function FormScreen({
+  title,
+  subtitle,
+  onBack,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  onBack: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="form-screen">
+      <header className="form-screen-header">
+        <button type="button" className="btn btn-ghost form-screen-back" onClick={onBack}>
+          <Icon name="chevron-left" /> Back
+        </button>
+        <div className="form-screen-heading">
+          <h1>{title}</h1>
+          <p>{subtitle}</p>
+        </div>
+      </header>
+      <main className="form-screen-body">{children}</main>
+    </div>
+  );
+}
+
+function EmptyProjectsState({ onCreate }: { onCreate: () => void }) {
+  return (
+    <main className="empty-projects">
+      <div className="empty-state">
+        <BrandMark />
+        <p className="empty-title">No projects yet</p>
+        <p className="empty-hint">Create your first project to start tracking issues and local pull requests.</p>
+        <button type="button" className="btn btn-primary" onClick={onCreate}>
+          <Icon name="plus" /> Create first project
+        </button>
+      </div>
+    </main>
   );
 }
 
@@ -1150,6 +1582,25 @@ function DialogActions({
   return (
     <div className="dialog-actions">
       <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
+      <button className="btn btn-primary" type="submit" disabled={busy}>
+        {busy ? "Saving…" : submitLabel}
+      </button>
+    </div>
+  );
+}
+
+function FormActions({
+  onCancel,
+  busy,
+  submitLabel,
+}: {
+  onCancel: () => void;
+  busy: boolean;
+  submitLabel: string;
+}) {
+  return (
+    <div className="form-screen-actions">
+      <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
       <button className="btn btn-primary" type="submit" disabled={busy}>
         {busy ? "Saving…" : submitLabel}
       </button>
@@ -1261,6 +1712,7 @@ function BrandMark() {
 }
 
 type IconName =
+  | "chevron-down"
   | "chevron-left"
   | "chevron-right"
   | "plus"
@@ -1272,6 +1724,7 @@ type IconName =
 
 function Icon({ name, className = "" }: { name: IconName; className?: string }) {
   const paths: Record<IconName, ReactNode> = {
+    "chevron-down": <path d="m6 9 6 6 6-6" />,
     "chevron-left": <path d="m15 18-6-6 6-6" />,
     "chevron-right": <path d="m9 18 6-6-6-6" />,
     plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
@@ -1296,4 +1749,25 @@ function positiveNumber(value: string | null): number | null {
   if (!value) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function syncAppUrl(params: {
+  project: string | null;
+  screen: "settings" | "new-project" | null;
+  issue: number | null;
+  pr: number | null;
+}) {
+  const search = new URLSearchParams();
+  if (params.project) search.set("project", params.project);
+  if (params.screen) search.set("screen", params.screen);
+  if (!params.screen) {
+    if (params.issue) search.set("issue", String(params.issue));
+    else if (params.pr) search.set("pr", String(params.pr));
+  }
+  const qs = search.toString();
+  const next = qs ? `${location.pathname}?${qs}` : location.pathname;
+  const current = `${location.pathname}${location.search}`;
+  if (current !== next) {
+    history.replaceState(null, "", next);
+  }
 }

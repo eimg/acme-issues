@@ -22,6 +22,9 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
 ## Working rules
 
 - Preserve SQLite issue, comment, delivery, Helix-run lineage, local PR, and review-revision behavior.
+- Keep projects as first-class scopes: unique slug, per-project Helix/webhook settings and callback URL, nested `/api/projects/:ref/...` routes, and cascade delete with an explicit UI warning.
+- Accommodate Helix’s flat tracker contract without making Helix know Issues projects: `POST/PATCH /api/pull-requests`, `GET /api/pull-requests/:id` (UI deep-links), and `POST /api/webhooks/helix` resolve project via issue/PR id. Nested project routes remain the Issues UI / Acme Projects surface.
+- When an issue carries `sourceCardId` + `projectsCallbackUrl`, emit best-effort Projects lifecycle webhooks on started / in_review / completed transitions (no shared global state).
 - Keep webhook retries and continuation event identities deterministic.
 - **Address feedback** on `changes_requested` / `blocked` PRs continues the
   latest completed Helix run for the linked issue (same continuation contract

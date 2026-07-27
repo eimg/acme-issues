@@ -1,20 +1,22 @@
 import type Database from "better-sqlite3";
-import { loadConfig } from "./config.js";
 import {
+  getIssue,
+  getIssueById,
   issueMatchesFilter,
   issueToWebhookPayload,
   recordDelivery,
   type AppConfig,
 } from "./issues.js";
+import { getProject } from "./projects.js";
 import type {
   ContinuationWebhookPayload,
   Issue,
   OutboundWebhookPayload,
+  Project,
   PullRequest,
   PullRequestReviewWebhookPayload,
   WebhookDelivery,
 } from "./types.js";
-import { getIssue } from "./issues.js";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAYS_MS = [0, 500, 1500];
@@ -38,13 +40,13 @@ export class WebhookDispatcher {
   }
 
   async dispatchForIssue(issue: Issue, reason: string): Promise<WebhookDelivery | null> {
-    const config = loadConfig(this.db);
-    if (!config.webhookEnabled) return null;
-    if (!config.webhookUrl.trim()) {
+    const project = requireProject(this.db, issue.projectId);
+    if (!project.webhookEnabled) return null;
+    if (!project.webhookUrl.trim()) {
       return recordDelivery(this.db, {
         issueId: issue.id,
         url: "",
-        payload: issueToWebhookPayload(issue, config.baseUrl),
+        payload: issueToWebhookPayload(issue, project),
         statusCode: null,
         responseBody: null,
         success: false,
@@ -55,8 +57,8 @@ export class WebhookDispatcher {
     if (issue.status !== "open") {
       return recordDelivery(this.db, {
         issueId: issue.id,
-        url: config.webhookUrl,
-        payload: issueToWebhookPayload(issue, config.baseUrl),
+        url: project.webhookUrl,
+        payload: issueToWebhookPayload(issue, project),
         statusCode: null,
         responseBody: null,
         success: false,
@@ -65,25 +67,31 @@ export class WebhookDispatcher {
       });
     }
 
-    const payload = issueToWebhookPayload(issue, config.baseUrl);
-    return this.send(config.webhookUrl, issue.id, payload, reason, config.baseUrl);
+    const payload = issueToWebhookPayload(issue, project);
+    return this.send(project.webhookUrl, issue.id, project, payload, reason);
   }
 
   async dispatchContinuation(
     issue: Issue,
     parentRunId: string,
-    payload: ContinuationWebhookPayload,
+    payload: Omit<ContinuationWebhookPayload, "projectId" | "projectSlug">,
     reason: string,
   ): Promise<WebhookDelivery | null> {
-    const config = loadConfig(this.db);
-    if (!config.webhookEnabled) return null;
+    const project = requireProject(this.db, issue.projectId);
+    if (!project.webhookEnabled) return null;
 
-    const url = continuationUrl(config.webhookUrl, parentRunId);
+    const fullPayload: ContinuationWebhookPayload = {
+      ...payload,
+      projectId: project.id,
+      projectSlug: project.slug,
+    };
+
+    const url = continuationUrl(project.webhookUrl, parentRunId);
     if (!url) {
       return recordDelivery(this.db, {
         issueId: issue.id,
-        url: config.webhookUrl,
-        payload,
+        url: project.webhookUrl,
+        payload: fullPayload,
         statusCode: null,
         responseBody: null,
         success: false,
@@ -95,7 +103,7 @@ export class WebhookDispatcher {
       return recordDelivery(this.db, {
         issueId: issue.id,
         url,
-        payload,
+        payload: fullPayload,
         statusCode: null,
         responseBody: null,
         success: false,
@@ -103,17 +111,17 @@ export class WebhookDispatcher {
         error: `Skipped (${reason}): issue is ${issue.status}`,
       });
     }
-    return this.send(url, issue.id, payload, reason, config.baseUrl);
+    return this.send(url, issue.id, project, fullPayload, reason);
   }
 
   async dispatchPullRequestReview(
     pullRequest: PullRequest,
   ): Promise<{ success: boolean; statusCode: number | null; error: string | null; response?: unknown }> {
-    const config = loadConfig(this.db);
-    if (!config.webhookEnabled) {
+    const project = requireProject(this.db, pullRequest.projectId);
+    if (!project.webhookEnabled) {
       return { success: false, statusCode: null, error: "Webhooks are disabled" };
     }
-    const url = pullRequestReviewUrl(config.webhookUrl);
+    const url = pullRequestReviewUrl(project.webhookUrl);
     if (!url) {
       return {
         success: false,
@@ -123,7 +131,7 @@ export class WebhookDispatcher {
     }
 
     const issue = pullRequest.issueId
-      ? getIssue(this.db, config.baseUrl, pullRequest.issueId)
+      ? getIssue(this.db, project, pullRequest.issueId)
       : undefined;
     const payload: PullRequestReviewWebhookPayload = {
       pullRequest: {
@@ -142,8 +150,10 @@ export class WebhookDispatcher {
           : undefined,
       },
       callback: {
-        trackerUrl: config.baseUrl.replace(/\/$/, ""),
+        trackerUrl: project.baseUrl.replace(/\/$/, ""),
         pullRequestId: pullRequest.id,
+        projectId: project.id,
+        projectSlug: project.slug,
       },
       externalEventId: `pull-request:${pullRequest.id}:head:${pullRequest.headSha}`,
     };
@@ -155,7 +165,8 @@ export class WebhookDispatcher {
           "Content-Type": "application/json",
           "X-Issues-Reason": "pull_request.review_requested",
           "X-Issues-Pull-Request-Id": String(pullRequest.id),
-          "X-Issues-Source": config.baseUrl.replace(/\/$/, ""),
+          "X-Issues-Project-Id": String(project.id),
+          "X-Issues-Source": project.baseUrl.replace(/\/$/, ""),
         },
         body: JSON.stringify(payload),
       });
@@ -194,11 +205,11 @@ export class WebhookDispatcher {
     mergeCommitSha?: string;
     repositoryPath?: string;
   }> {
-    const config = loadConfig(this.db);
-    if (!config.webhookEnabled) {
+    const project = requireProject(this.db, pullRequest.projectId);
+    if (!project.webhookEnabled) {
       return { success: false, statusCode: null, error: "Webhooks are disabled" };
     }
-    const url = localPullRequestMergeUrl(config.webhookUrl);
+    const url = localPullRequestMergeUrl(project.webhookUrl);
     if (!url) {
       return {
         success: false,
@@ -214,9 +225,12 @@ export class WebhookDispatcher {
           "Content-Type": "application/json",
           "X-Issues-Reason": "pull_request.merge",
           "X-Issues-Pull-Request-Id": String(pullRequest.id),
-          "X-Issues-Source": config.baseUrl.replace(/\/$/, ""),
+          "X-Issues-Project-Id": String(project.id),
+          "X-Issues-Source": project.baseUrl.replace(/\/$/, ""),
         },
         body: JSON.stringify({
+          projectId: project.id,
+          projectSlug: project.slug,
           pullRequest: {
             id: pullRequest.id,
             title: pullRequest.title,
@@ -267,9 +281,11 @@ export class WebhookDispatcher {
   }
 
   /** Best-effort Helix workspace cwd for copyable merge commands. */
-  async fetchHelixWorkspaceCwd(): Promise<string | undefined> {
-    const config = loadConfig(this.db);
-    const url = helixWorkspaceUrl(config.webhookUrl);
+  async fetchHelixWorkspaceCwd(projectOrId: Project | number): Promise<string | undefined> {
+    const project =
+      typeof projectOrId === "number" ? getProject(this.db, projectOrId) : projectOrId;
+    if (!project) return undefined;
+    const url = helixWorkspaceUrl(project.webhookUrl);
     if (!url) return undefined;
     try {
       const res = await this.fetchFn(url, { method: "GET" });
@@ -284,13 +300,14 @@ export class WebhookDispatcher {
   async send(
     url: string,
     issueId: number,
+    project: Project,
     payload: OutboundWebhookPayload,
     reason: string,
-    trackerUrl?: string
   ): Promise<WebhookDelivery> {
     let lastStatus: number | null = null;
     let lastBody: string | null = null;
     let lastError: string | null = null;
+    const trackerUrl = project.baseUrl.replace(/\/$/, "");
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const delay = RETRY_DELAYS_MS[attempt - 1] ?? 1500;
@@ -303,7 +320,8 @@ export class WebhookDispatcher {
             "Content-Type": "application/json",
             "X-Issues-Reason": reason,
             "X-Issues-Issue-Id": String(issueId),
-            ...(trackerUrl ? { "X-Issues-Source": trackerUrl.replace(/\/$/, "") } : {}),
+            "X-Issues-Project-Id": String(project.id),
+            "X-Issues-Source": trackerUrl,
           },
           body: JSON.stringify(payload),
         });
@@ -342,6 +360,21 @@ export class WebhookDispatcher {
       error: lastError,
     });
   }
+}
+
+function requireProject(db: Database.Database, projectId: number): Project {
+  const project = getProject(db, projectId);
+  if (!project) {
+    throw new Error(`Project ${projectId} not found`);
+  }
+  return project;
+}
+
+export function resolveIssueProject(
+  db: Database.Database,
+  issueId: number,
+): { issue: Issue; project: Project } | null {
+  return getIssueById(db, issueId);
 }
 
 function continuationUrl(webhookUrl: string, parentRunId: string): string | undefined {

@@ -20,7 +20,8 @@ Acme Issues is one of six related projects. They remain separate products with s
 Existing-repo exercise: Acme Issues sends a work item to Helix, which works on Acme Todo. Primer develops the separate knowledge side of the same fictional Acme context.
 
 Current manual feature handoff: a ready Acme Projects card can create a thin
-linked issue here with the `acme-projects` label. It does not include `trigger`;
+linked issue here with the `acme-projects` label via the nested project issues
+API (`POST /api/projects/:ref/issues`). It does not include `trigger`;
 a human adds the configured trigger label to start the existing Acme Issues →
 Helix flow. Automatic triggering and project-card lifecycle callbacks remain
 planned. Acme Projects will not call Helix directly; see
@@ -88,7 +89,9 @@ npm run dev
 # → http://127.0.0.1:8320/
 ```
 
-Open **Settings** to set your webhook URL and label filter, then create issues from the UI or API.
+Open the project title in the header to select or create a project, then open
+**Settings** for that project’s webhook URL, callback URL, and label filter.
+Create issues from the UI or nested project API.
 
 ### Recommended: Helix integration
 
@@ -116,10 +119,12 @@ npm run dev
 # → http://127.0.0.1:8320/
 ```
 
-**Configure Settings** (`http://127.0.0.1:8320/`):
+**Configure project settings** (`http://127.0.0.1:8320/` — create or select a
+project from the header title, then **Settings**):
 
 | Setting | Value |
 |---------|-------|
+| Callback URL | `http://127.0.0.1:8320` (this Issues base URL for Helix callbacks) |
 | Webhook URL | `http://127.0.0.1:8319/runs` |
 | Label filter | `trigger` (default) |
 | Continuation comment command | `/helix` (default) |
@@ -135,9 +140,9 @@ When review returns `changes_requested` or `blocked`, **Address feedback** asks 
 
 The UI intentionally does not create pull requests or select repositories.
 Helix supplies the repository, branch, and exact SHA identity when it registers
-completed implementation work. The registration API retains the same generic
-contract so another trusted producer can integrate later without changing the
-review lifecycle.
+completed work via the flat tracker contract (`POST/PATCH /api/pull-requests`).
+Nested `/api/projects/:ref/pull-requests` remains for the Issues UI and other
+producers that already know the project.
 
 The current localhost harness assumes registered repositories and branches are trusted. Diff reading and Helix verification operate on local paths, and verification is not container-sandboxed yet.
 
@@ -145,15 +150,23 @@ After completion, reopen the issue or add a comment such as `/helix also cover t
 
 Full Helix setup and config: [github.com/eimg/helix](https://github.com/eimg/helix#getting-started).
 
-## Default configuration
+## Default project configuration
+
+Each project stores its own settings (formerly global):
 
 | Setting | Default |
 |---------|---------|
-| Port | `8320` |
+| Callback URL (`baseUrl`) | `http://127.0.0.1:8320` |
 | Webhook URL | *(empty — configure in Settings)* |
 | Label filter | `trigger` |
 | Continuation comment command | `/helix` |
 | Webhooks enabled | `false` |
+
+Server port and data directory remain process-level:
+
+| Setting | Default |
+|---------|---------|
+| Port | `8320` |
 | Data directory | `./data/` (override with `ACME_ISSUES_DATA_DIR`) |
 
 ## Webhook behavior
@@ -164,8 +177,8 @@ When webhooks are enabled and a URL is set, delivery fires on:
 2. **Label added** — filter label added to an open issue
 3. **Issue reopened** — if a completed Helix run is known, continue it; otherwise start an initial run
 4. **Command comment** — a user comment beginning with the configured command continues the latest completed run
-5. **Manual** — **Send webhook** button or `POST /api/issues/:id/trigger`
-6. **Address feedback** — on a `changes_requested` / `blocked` PR, continues the latest completed Helix run for the linked issue with review findings (`POST /api/pull-requests/:id/address-feedback`)
+5. **Manual** — **Send webhook** button or `POST /api/projects/:ref/issues/:id/trigger`
+6. **Address feedback** — on a `changes_requested` / `blocked` PR, continues the latest completed Helix run for the linked issue with review findings (`POST /api/projects/:ref/pull-requests/:id/address-feedback`)
 
 Outbound payload (includes correlation for Helix callbacks):
 
@@ -176,12 +189,16 @@ Outbound payload (includes correlation for Helix callbacks):
   "labels": ["trigger", "bug"],
   "external": {
     "trackerUrl": "http://127.0.0.1:8320",
-    "issueId": 7
+    "issueId": 7,
+    "projectId": 1,
+    "projectSlug": "acme-todo"
   }
 }
 ```
 
-Headers: `X-Issues-Issue-Id`, `X-Issues-Source`, `X-Issues-Reason`.
+Headers: `X-Issues-Issue-Id`, `X-Issues-Project-Id`, `X-Issues-Source`, `X-Issues-Reason`.
+Helix’s stable contract only requires `trackerUrl` + `issueId` (and the flat
+PR/callback paths); project fields are optional extras Issues may send.
 
 Issue deliveries retry up to 3 times and appear in **Webhook deliveries**. PR review requests are sent directly to the Helix `/pr-reviews` endpoint derived from the configured `/runs` URL.
 
@@ -247,34 +264,50 @@ Helix sends `pr.review.started` and `pr.review.completed` to the same callback e
 
 ## API
 
+`:projectRef` is a project id or unique slug.
+
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/api/issues` | List issues (`?status=open\|in_progress\|closed`, `?label=`, `?limit=`, `?offset=`) |
-| `POST` | `/api/issues` | Create issue |
-| `GET` | `/api/issues/:id` | Get issue |
-| `PATCH` | `/api/issues/:id` | Update issue |
-| `DELETE` | `/api/issues/:id` | Delete issue |
-| `GET` | `/api/issues/:id/comments` | List comments |
-| `POST` | `/api/issues/:id/comments` | Create comment (`body` required; optional `author`) |
-| `PATCH` | `/api/issues/:issueId/comments/:commentId` | Update comment (`body` and/or `author`) |
-| `DELETE` | `/api/issues/:issueId/comments/:commentId` | Delete comment |
-| `POST` | `/api/issues/:id/trigger` | Manual webhook delivery |
-| `GET` | `/api/pull-requests` | List local PRs (`?status=` optional) |
-| `POST` | `/api/pull-requests` | Register a Git-backed PR from Helix or another trusted producer |
-| `DELETE` | `/api/pull-requests` | Clear all local PR history and reviews |
-| `GET` | `/api/pull-requests/:id` | Get PR identity plus review history |
-| `DELETE` | `/api/pull-requests/:id` | Delete one local PR and its reviews |
-| `GET` | `/api/pull-requests/:id/diff` | Read the recorded base-to-head Git diff |
-| `POST` | `/api/pull-requests/:id/merge` | Human-initiated local Git merge of a `ready_to_merge` PR |
-| `PATCH` | `/api/pull-requests/:id` | Update head identity or record `draft`, `merged`, or `closed` |
-| `POST` | `/api/pull-requests/:id/review` | Request independent Helix PR review |
-| `GET` | `/api/webhooks/deliveries` | Delivery log |
-| `DELETE` | `/api/webhooks/deliveries/:id` | Remove one delivery log |
-| `DELETE` | `/api/webhooks/deliveries` | Clear all delivery logs |
-| `GET` | `/api/config` | Read settings |
-| `PATCH` | `/api/config` | Update settings |
+| `GET` | `/api/projects` | List projects |
+| `POST` | `/api/projects` | Create project (`title` required; optional `slug` + settings) |
+| `GET` | `/api/projects/:projectRef` | Get project |
+| `PATCH` | `/api/projects/:projectRef` | Update project title, slug, or settings |
+| `DELETE` | `/api/projects/:projectRef` | Delete project (cascades issues, PRs, deliveries, reviews) |
+| `GET` | `/api/projects/:projectRef/helix` | Probe Helix target (`…/health` from webhook URL): `online` / `offline` / `unconfigured` |
+| `GET` | `/api/projects/:projectRef/issues` | List issues (`?status=open\|in_progress\|closed`, `?label=`, `?limit=`, `?offset=`) |
+| `POST` | `/api/projects/:projectRef/issues` | Create issue |
+| `GET` | `/api/projects/:projectRef/issues/:id` | Get issue |
+| `PATCH` | `/api/projects/:projectRef/issues/:id` | Update issue |
+| `DELETE` | `/api/projects/:projectRef/issues/:id` | Delete issue |
+| `GET` | `/api/projects/:projectRef/issues/:id/comments` | List comments |
+| `POST` | `/api/projects/:projectRef/issues/:id/comments` | Create comment (`body` required; optional `author`) |
+| `PATCH` | `/api/projects/:projectRef/issues/:issueId/comments/:commentId` | Update comment (`body` and/or `author`) |
+| `DELETE` | `/api/projects/:projectRef/issues/:issueId/comments/:commentId` | Delete comment |
+| `POST` | `/api/projects/:projectRef/issues/:id/trigger` | Manual webhook delivery |
+| `GET` | `/api/projects/:projectRef/pull-requests` | List local PRs (`?status=` optional) |
+| `POST` | `/api/pull-requests` | Helix soft contract: create PR; project resolved from `issueId` |
+| `GET` | `/api/pull-requests/:id` | Helix/UI soft contract: fetch PR + owning project for `?pr=` deep-links |
+| `PATCH` | `/api/pull-requests/:id` | Helix soft contract: update PR; project resolved from PR id |
+| `POST` | `/api/projects/:projectRef/pull-requests` | Register a PR in a known project (Issues UI / other producers; Helix uses the flat routes above) |
+| `DELETE` | `/api/projects/:projectRef/pull-requests` | Clear all local PR history and reviews for the project |
+| `GET` | `/api/projects/:projectRef/pull-requests/:id` | Get PR identity plus review history |
+| `DELETE` | `/api/projects/:projectRef/pull-requests/:id` | Delete one local PR and its reviews |
+| `GET` | `/api/projects/:projectRef/pull-requests/:id/diff` | Read the recorded base-to-head Git diff |
+| `POST` | `/api/projects/:projectRef/pull-requests/:id/merge` | Human-initiated local Git merge of a `ready_to_merge` PR |
+| `PATCH` | `/api/projects/:projectRef/pull-requests/:id` | Update head identity or record `draft`, `merged`, or `closed` |
+| `POST` | `/api/projects/:projectRef/pull-requests/:id/review` | Request independent Helix PR review |
+| `POST` | `/api/projects/:projectRef/pull-requests/:id/address-feedback` | Continue Helix run from PR review feedback |
+| `GET` | `/api/projects/:projectRef/webhooks/deliveries` | Delivery log |
+| `DELETE` | `/api/projects/:projectRef/webhooks/deliveries/:id` | Remove one delivery log |
+| `DELETE` | `/api/projects/:projectRef/webhooks/deliveries` | Clear project delivery logs |
+| `POST` | `/api/webhooks/helix` | Inbound Helix callbacks (resolves project via issue/PR id) |
 
-`GET /api/issues` returns `{ items, total, limit, offset }` (default `limit` 25).
+`GET /api/projects/:projectRef/issues` returns `{ items, total, limit, offset }` (default `limit` 25).
+
+Deep links use `?project=<slug>&issue=<id>` or `?pr=<id>` (Helix’s flat PR
+link; Issues resolves the owning project). Nested `?project=<slug>&pr=<id>`
+still works. Project settings and new-project use `?project=<slug>&screen=settings`
+and `?screen=new-project`.
 
 Issue status values: `open`, `in_progress`, `closed`.
 

@@ -15,6 +15,7 @@ describe("acme-issues API", () => {
   let db: ReturnType<typeof openDatabase>;
   let app: ReturnType<typeof createApp>;
   let webhookCalls: { url: string; body: unknown }[];
+  let projectsLifecycleCalls: { url: string; body: unknown }[];
 
   before(() => {
     dataDir = mkdtempSync(join(tmpdir(), "acme-issues-"));
@@ -30,32 +31,34 @@ describe("acme-issues API", () => {
     });
 
     webhookCalls = [];
-    const dispatcher = new WebhookDispatcher({
-      db,
-      fetchFn: async (url, init) => {
-        const href = String(url);
-        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-        webhookCalls.push({ url: href, body });
-        if (href.includes("/continuations")) {
-          return new Response(
-            JSON.stringify({ id: `child-run-${webhookCalls.length}`, status: "running" }),
-            { status: 202 },
-          );
-        }
-        if (href.endsWith("/workspace")) {
-          return new Response(JSON.stringify({ cwd: "/tmp/helix-workspace" }), { status: 200 });
-        }
-        if (href.endsWith("/local-prs/merge")) {
-          return new Response(
-            JSON.stringify({ error: "Helix merge not stubbed for this test" }),
-            { status: 501 },
-          );
-        }
-        return new Response(JSON.stringify({ ok: true, id: `run-${webhookCalls.length}` }), { status: 202 });
-      },
-    });
-
-    app = createApp({ db, dispatcher });
+    projectsLifecycleCalls = [];
+    const fetchFn: typeof fetch = async (url, init) => {
+      const href = String(url);
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      if (href.includes("/api/webhooks/issues")) {
+        projectsLifecycleCalls.push({ url: href, body });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      webhookCalls.push({ url: href, body });
+      if (href.includes("/continuations")) {
+        return new Response(
+          JSON.stringify({ id: `child-run-${webhookCalls.length}`, status: "running" }),
+          { status: 202 },
+        );
+      }
+      if (href.endsWith("/workspace")) {
+        return new Response(JSON.stringify({ cwd: "/tmp/helix-workspace" }), { status: 200 });
+      }
+      if (href.endsWith("/local-prs/merge")) {
+        return new Response(
+          JSON.stringify({ error: "Helix merge not stubbed for this test" }),
+          { status: 501 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, id: `run-${webhookCalls.length}` }), { status: 202 });
+    };
+    const dispatcher = new WebhookDispatcher({ db, fetchFn });
+    app = createApp({ db, dispatcher, fetchFn });
   });
 
   after(() => {
@@ -105,6 +108,84 @@ describe("acme-issues API", () => {
     await request(app).delete("/api/projects/acme-todo").expect(204);
     await request(app).get("/api/projects/acme-todo").expect(404);
     await request(app).get(`/api/projects/default/issues/${issueB.body.issue.id}`).expect(404);
+  });
+
+  it("notifies Acme Projects on linked-issue lifecycle transitions", async () => {
+    projectsLifecycleCalls.length = 0;
+    const created = await request(app)
+      .post("/api/projects/default/issues")
+      .send({
+        title: "From Projects",
+        labels: [],
+        sourceCardId: "42",
+        projectsCallbackUrl: "http://projects.test/api/webhooks/issues",
+      })
+      .expect(201);
+    const issueId = created.body.issue.id as number;
+    assert.equal(created.body.issue.sourceCardId, "42");
+    assert.equal(created.body.issue.projectsCallbackUrl, "http://projects.test/api/webhooks/issues");
+
+    await request(app)
+      .post("/api/webhooks/helix")
+      .set("X-Helix-Event", "run.started")
+      .send({
+        event: "run.started",
+        run: { id: "run-projects-1", status: "running", startedAt: Date.now() },
+        issue: { id: issueId, title: "From Projects" },
+      })
+      .expect(200);
+
+    assert.equal(projectsLifecycleCalls.length, 1);
+    assert.equal(
+      (projectsLifecycleCalls[0].body as { event: string }).event,
+      "implementation.started",
+    );
+
+    const pr = await request(app)
+      .post("/api/projects/default/pull-requests")
+      .send({
+        issueId,
+        title: "PR for projects card",
+        repositoryPath: "/tmp/example-repo",
+        baseBranch: "main",
+        baseSha: "base",
+        headBranch: "feature/projects",
+        headSha: "head",
+        origin: "helix",
+      })
+      .expect(201);
+
+    assert.equal(projectsLifecycleCalls.length, 2);
+    assert.equal(
+      (projectsLifecycleCalls[1].body as { event: string }).event,
+      "implementation.in_review",
+    );
+
+    await request(app).post("/api/webhooks/helix").send({
+      event: "pr.review.completed",
+      review: {
+        id: "review-projects",
+        status: "completed",
+        headSha: "head",
+        startedAt: 1,
+        finishedAt: 2,
+        decision: "ready_to_merge",
+        summary: "ready",
+      },
+      pullRequest: { id: pr.body.id },
+    }).expect(200);
+
+    await request(app)
+      .patch(`/api/projects/default/pull-requests/${pr.body.id}`)
+      .send({ status: "merged", mergeCommitSha: "merge-sha" })
+      .expect(200);
+
+    assert.equal(projectsLifecycleCalls.length, 3);
+    assert.equal(
+      (projectsLifecycleCalls[2].body as { event: string }).event,
+      "implementation.completed",
+    );
+    assert.equal((projectsLifecycleCalls[2].body as { sourceCardId: string }).sourceCardId, "42");
   });
 
   it("creates an issue and auto-triggers webhook when filter label present", async () => {

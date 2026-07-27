@@ -41,6 +41,10 @@ export interface Issue {
   body: string;
   status: IssueStatus;
   labels: string[];
+  /** Acme Projects card id when this issue was created from a board handoff. */
+  sourceCardId?: string;
+  /** Acme Projects webhook URL for lifecycle projection (In progress / In review / Done). */
+  projectsCallbackUrl?: string;
   createdAt: number;
   updatedAt: number;
   url: string;
@@ -51,6 +55,8 @@ export interface IssueInput {
   body?: string;
   labels?: string[];
   status?: IssueStatus;
+  sourceCardId?: string;
+  projectsCallbackUrl?: string;
 }
 
 export interface IssueUpdate {
@@ -58,6 +64,8 @@ export interface IssueUpdate {
   body?: string;
   status?: IssueStatus;
   labels?: string[];
+  sourceCardId?: string;
+  projectsCallbackUrl?: string;
 }
 
 /** Per-project Helix/webhook settings (formerly global AppConfig). */

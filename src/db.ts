@@ -131,6 +131,7 @@ function migrate(db: Database.Database): void {
   migrateIssuesStatusConstraint(db);
   migrateHelixRunsTrigger(db);
   migrateMultiProject(db);
+  migrateProjectsHandoff(db);
 }
 
 /** Existing DBs may still CHECK only open|closed; recreate table if needed. */
@@ -320,4 +321,14 @@ function migrateMultiProject(db: Database.Database): void {
   }
 
   db.exec(`PRAGMA foreign_keys = ON`);
+}
+
+function migrateProjectsHandoff(db: Database.Database): void {
+  const issueColumns = db.prepare(`PRAGMA table_info(issues)`).all() as Array<{ name: string }>;
+  if (!issueColumns.some((c) => c.name === "source_card_id")) {
+    db.exec(`ALTER TABLE issues ADD COLUMN source_card_id TEXT`);
+  }
+  if (!issueColumns.some((c) => c.name === "projects_callback_url")) {
+    db.exec(`ALTER TABLE issues ADD COLUMN projects_callback_url TEXT`);
+  }
 }

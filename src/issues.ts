@@ -17,6 +17,8 @@ interface IssueRow {
   body: string;
   status: IssueStatus;
   labels: string;
+  source_card_id: string | null;
+  projects_callback_url: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -53,6 +55,8 @@ function toIssue(row: IssueRow, project: Project): Issue {
     body: row.body,
     status: row.status,
     labels: parseLabels(row.labels),
+    sourceCardId: row.source_card_id?.trim() || undefined,
+    projectsCallbackUrl: row.projects_callback_url?.trim() || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     url: `${base}/?project=${encodeURIComponent(project.slug)}&issue=${row.id}`,
@@ -174,8 +178,13 @@ export function createIssue(
   const labels = normalizeLabels(input.labels);
   const result = db
     .prepare(
-      `INSERT INTO issues (project_id, title, body, status, labels, created_at, updated_at)
-       VALUES (@projectId, @title, @body, @status, @labels, @now, @now)`,
+      `INSERT INTO issues (
+         project_id, title, body, status, labels, source_card_id, projects_callback_url,
+         created_at, updated_at
+       ) VALUES (
+         @projectId, @title, @body, @status, @labels, @sourceCardId, @projectsCallbackUrl,
+         @now, @now
+       )`,
     )
     .run({
       projectId: project.id,
@@ -183,6 +192,8 @@ export function createIssue(
       body: input.body?.trim() ?? "",
       status: input.status ?? "open",
       labels: JSON.stringify(labels),
+      sourceCardId: input.sourceCardId?.trim() || null,
+      projectsCallbackUrl: input.projectsCallbackUrl?.trim() || null,
       now,
     });
 
@@ -202,11 +213,21 @@ export function updateIssue(
   const body = patch.body !== undefined ? patch.body.trim() : existing.body;
   const status = patch.status ?? existing.status;
   const labels = patch.labels !== undefined ? normalizeLabels(patch.labels) : existing.labels;
+  const sourceCardId =
+    patch.sourceCardId !== undefined
+      ? patch.sourceCardId.trim() || undefined
+      : existing.sourceCardId;
+  const projectsCallbackUrl =
+    patch.projectsCallbackUrl !== undefined
+      ? patch.projectsCallbackUrl.trim() || undefined
+      : existing.projectsCallbackUrl;
   const now = Date.now();
 
   db.prepare(
     `UPDATE issues
-     SET title = @title, body = @body, status = @status, labels = @labels, updated_at = @now
+     SET title = @title, body = @body, status = @status, labels = @labels,
+         source_card_id = @sourceCardId, projects_callback_url = @projectsCallbackUrl,
+         updated_at = @now
      WHERE id = @id AND project_id = @projectId`,
   ).run({
     id,
@@ -215,6 +236,8 @@ export function updateIssue(
     body,
     status,
     labels: JSON.stringify(labels),
+    sourceCardId: sourceCardId ?? null,
+    projectsCallbackUrl: projectsCallbackUrl ?? null,
     now,
   });
 

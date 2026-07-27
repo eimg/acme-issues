@@ -32,7 +32,9 @@ import type {
   PullRequestStatus,
 } from "./types.js";
 import { WebhookDispatcher } from "./webhooks.js";
+import { notifyProjectsLifecycle } from "./projectsLifecycle.js";
 import { buildAddressFeedbackInstruction } from "./addressFeedback.js";
+import type { Issue } from "./types.js";
 import {
   activeHelixRun,
   helixActivityForIssue,
@@ -70,12 +72,29 @@ import {
 export interface CreateAppOptions {
   db: Database.Database;
   dispatcher?: WebhookDispatcher;
+  fetchFn?: typeof fetch;
 }
 
 export function createApp(opts: CreateAppOptions): Express {
   const { db } = opts;
-  const dispatcher = opts.dispatcher ?? new WebhookDispatcher({ db });
+  const fetchFn = opts.fetchFn ?? fetch;
+  const dispatcher = opts.dispatcher ?? new WebhookDispatcher({ db, fetchFn });
   const app = express();
+
+  const emitProjects = async (
+    issue: Issue | null | undefined,
+    project: Project,
+    event: Parameters<typeof notifyProjectsLifecycle>[2],
+    externalEventId: string,
+    pullRequestId?: number,
+  ) => {
+    if (!issue?.projectsCallbackUrl || !issue.sourceCardId) return;
+    await notifyProjectsLifecycle(issue, project, event, {
+      fetchFn,
+      externalEventId,
+      pullRequestId,
+    });
+  };
 
   app.use(express.json());
   app.use(webAssets());
@@ -257,6 +276,12 @@ export function createApp(opts: CreateAppOptions): Express {
           if (currentIssue.status !== "in_progress") {
             currentIssue =
               updateIssue(db, project, currentIssue.id, { status: "in_progress" }) ?? currentIssue;
+            await emitProjects(
+              currentIssue,
+              project,
+              "implementation.started",
+              `issue:${currentIssue.id}:comment:${comment.id}:continuation`,
+            );
           }
         }
       }
@@ -344,6 +369,9 @@ export function createApp(opts: CreateAppOptions): Express {
       body: typeof body.body === "string" ? body.body : "",
       labels: parseLabels(body.labels),
       status: parseStatus(body.status) ?? "open",
+      sourceCardId: typeof body.sourceCardId === "string" ? body.sourceCardId : undefined,
+      projectsCallbackUrl:
+        typeof body.projectsCallbackUrl === "string" ? body.projectsCallbackUrl : undefined,
     });
 
     let delivery = null;
@@ -377,6 +405,24 @@ export function createApp(opts: CreateAppOptions): Express {
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (existing.status !== issue.status) {
+      if (issue.status === "in_progress") {
+        await emitProjects(
+          issue,
+          project,
+          "implementation.started",
+          `issue:${issue.id}:status:in_progress:${issue.updatedAt}`,
+        );
+      } else if (issue.status === "closed") {
+        await emitProjects(
+          issue,
+          project,
+          "implementation.completed",
+          `issue:${issue.id}:status:closed:${issue.updatedAt}`,
+        );
+      }
     }
 
     let delivery = null;
@@ -452,7 +498,7 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ deleted });
   });
 
-  app.post("/api/projects/:projectRef/pull-requests", (req, res) => {
+  app.post("/api/projects/:projectRef/pull-requests", async (req, res) => {
     const project = requireProject(db, req, res);
     if (!project) return;
     const body = req.body as Record<string, unknown>;
@@ -497,6 +543,16 @@ export function createApp(opts: CreateAppOptions): Express {
       author: typeof body.author === "string" ? body.author : "unknown",
       origin,
     });
+    if (pullRequest.issueId) {
+      const linked = getIssue(db, project, pullRequest.issueId);
+      await emitProjects(
+        linked,
+        project,
+        "implementation.in_review",
+        `issue:${pullRequest.issueId}:pr:${pullRequest.id}:registered`,
+        pullRequest.id,
+      );
+    }
     res.status(201).json(pullRequest);
   });
 
@@ -587,7 +643,14 @@ export function createApp(opts: CreateAppOptions): Express {
         mergeCommitSha: helixMerge.mergeCommitSha,
       });
       if (pullRequest?.issueId) {
-        updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+        const closed = updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+        await emitProjects(
+          closed,
+          project,
+          "implementation.completed",
+          `issue:${pullRequest.issueId}:pr:${id}:merged`,
+          id,
+        );
       }
       res.json({
         pullRequest,
@@ -607,7 +670,14 @@ export function createApp(opts: CreateAppOptions): Express {
           mergeCommitSha: result.mergeCommitSha,
         });
         if (pullRequest?.issueId) {
-          updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+          const closed = updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+          await emitProjects(
+            closed,
+            project,
+            "implementation.completed",
+            `issue:${pullRequest.issueId}:pr:${id}:merged`,
+            id,
+          );
         }
         res.json({
           pullRequest,
@@ -634,7 +704,7 @@ export function createApp(opts: CreateAppOptions): Express {
     });
   });
 
-  app.patch("/api/projects/:projectRef/pull-requests/:id", (req, res) => {
+  app.patch("/api/projects/:projectRef/pull-requests/:id", async (req, res) => {
     const project = requireProject(db, req, res);
     if (!project) return;
     const id = Number(req.params.id);
@@ -665,7 +735,14 @@ export function createApp(opts: CreateAppOptions): Express {
       mergeCommitSha: typeof body.mergeCommitSha === "string" ? body.mergeCommitSha : undefined,
     });
     if (pullRequest?.status === "merged" && pullRequest.issueId) {
-      updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+      const closed = updateIssue(db, project, pullRequest.issueId, { status: "closed" });
+      await emitProjects(
+        closed,
+        project,
+        "implementation.completed",
+        `issue:${pullRequest.issueId}:pr:${id}:merged`,
+        id,
+      );
     }
     res.json(pullRequest);
   });
@@ -794,6 +871,13 @@ export function createApp(opts: CreateAppOptions): Express {
         }
         if (issue.status !== "in_progress") {
           issue = updateIssue(db, project, issue.id, { status: "in_progress" }) ?? issue;
+          await emitProjects(
+            issue,
+            project,
+            "implementation.started",
+            `issue:${issue.id}:pr:${pullRequest.id}:address_feedback`,
+            pullRequest.id,
+          );
         }
       }
 
@@ -833,7 +917,7 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ deleted });
   });
 
-  app.post("/api/webhooks/helix", (req, res) => {
+  app.post("/api/webhooks/helix", async (req, res) => {
     const event =
       (typeof req.headers["x-helix-event"] === "string" ? req.headers["x-helix-event"] : undefined) ??
       (typeof req.body?.event === "string" ? req.body.event : undefined);
@@ -882,6 +966,12 @@ export function createApp(opts: CreateAppOptions): Express {
       }
       const issue = updateIssue(db, project, issueId, { status: "in_progress" });
       const comment = addHelixStartComment(db, issueId, payload);
+      await emitProjects(
+        issue,
+        project,
+        "implementation.started",
+        `issue:${issueId}:run:${payload.run.id}:started`,
+      );
       res.status(200).json({ ok: true, issue, comment });
       return;
     }
@@ -896,6 +986,14 @@ export function createApp(opts: CreateAppOptions): Express {
         existing.status === "in_progress"
           ? existing
           : updateIssue(db, project, issueId, { status: "in_progress" });
+      if (existing.status !== "in_progress") {
+        await emitProjects(
+          issue,
+          project,
+          "implementation.started",
+          `issue:${issueId}:run:${payload.run.id}:awaiting_pr`,
+        );
+      }
       const comment = addHelixPullRequestComment(db, issueId, payload);
       res.status(200).json({ ok: true, issue, comment, awaitingPullRequest: true });
       return;
@@ -903,6 +1001,12 @@ export function createApp(opts: CreateAppOptions): Express {
 
     const issue = updateIssue(db, project, issueId, { status: "closed" });
     const comment = addHelixCompletionComment(db, issueId, payload);
+    await emitProjects(
+      issue,
+      project,
+      "implementation.completed",
+      `issue:${issueId}:run:${payload.run.id}:completed`,
+    );
     res.status(200).json({ ok: true, issue, comment });
   });
 

@@ -12,6 +12,7 @@ import type {
 
 interface PullRequestRow {
   id: number;
+  project_id: number;
   issue_id: number | null;
   title: string;
   description: string;
@@ -45,6 +46,7 @@ interface PullRequestReviewRow {
 }
 
 export interface CreatePullRequestInput {
+  projectId: number;
   issueId?: number;
   title: string;
   description?: string;
@@ -76,13 +78,14 @@ export function createPullRequest(
   const now = Date.now();
   const result = db.prepare(`
     INSERT INTO pull_requests (
-      issue_id, title, description, repository_path, base_branch, base_sha,
+      project_id, issue_id, title, description, repository_path, base_branch, base_sha,
       head_branch, head_sha, author, origin, status, created_at, updated_at
     ) VALUES (
-      @issueId, @title, @description, @repositoryPath, @baseBranch, @baseSha,
+      @projectId, @issueId, @title, @description, @repositoryPath, @baseBranch, @baseSha,
       @headBranch, @headSha, @author, @origin, 'draft', @now, @now
     )
   `).run({
+    projectId: input.projectId,
     issueId: input.issueId ?? null,
     title: input.title.trim(),
     description: input.description?.trim() ?? "",
@@ -103,23 +106,47 @@ export function getPullRequest(db: Database.Database, id: number): PullRequest |
   return row ? toPullRequest(row) : undefined;
 }
 
+export function getPullRequestInProject(
+  db: Database.Database,
+  projectId: number,
+  id: number,
+): PullRequest | undefined {
+  const row = db
+    .prepare("SELECT * FROM pull_requests WHERE id = ? AND project_id = ?")
+    .get(id, projectId) as PullRequestRow | undefined;
+  return row ? toPullRequest(row) : undefined;
+}
+
 export function listPullRequests(
   db: Database.Database,
+  projectId: number,
   status?: PullRequestStatus,
 ): PullRequest[] {
   const rows = status
-    ? db.prepare("SELECT * FROM pull_requests WHERE status = ? ORDER BY updated_at DESC").all(status)
-    : db.prepare("SELECT * FROM pull_requests ORDER BY updated_at DESC").all();
+    ? db
+        .prepare(
+          "SELECT * FROM pull_requests WHERE project_id = ? AND status = ? ORDER BY updated_at DESC",
+        )
+        .all(projectId, status)
+    : db
+        .prepare("SELECT * FROM pull_requests WHERE project_id = ? ORDER BY updated_at DESC")
+        .all(projectId);
   return (rows as PullRequestRow[]).map(toPullRequest);
 }
 
-export function deletePullRequest(db: Database.Database, id: number): boolean {
-  return db.prepare("DELETE FROM pull_requests WHERE id = ?").run(id).changes > 0;
+export function deletePullRequest(
+  db: Database.Database,
+  projectId: number,
+  id: number,
+): boolean {
+  return db
+    .prepare("DELETE FROM pull_requests WHERE id = ? AND project_id = ?")
+    .run(id, projectId).changes > 0;
 }
 
-/** Removes all local PRs and their review rows (FK CASCADE). */
-export function clearPullRequests(db: Database.Database): number {
-  return db.prepare("DELETE FROM pull_requests").run().changes;
+/** Removes all local PRs for a project and their review rows (FK CASCADE). */
+export function clearPullRequests(db: Database.Database, projectId: number): number {
+  return db.prepare("DELETE FROM pull_requests WHERE project_id = ?").run(projectId).changes;
 }
 
 export function hasUnmergedPullRequest(
@@ -270,6 +297,7 @@ export function recordPullRequestReview(
 function toPullRequest(row: PullRequestRow): PullRequest {
   return {
     id: row.id,
+    projectId: row.project_id,
     issueId: row.issue_id ?? undefined,
     title: row.title,
     description: row.description,

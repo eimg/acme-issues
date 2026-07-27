@@ -1,6 +1,5 @@
 import express, { type Express, type Request, type Response } from "express";
 import type Database from "better-sqlite3";
-import { loadConfig, saveConfig, setBaseUrl } from "./config.js";
 import { attachHmr, webAssets, webFromSource, webIndex } from "./webAssets.js";
 import {
   clearDeliveries,
@@ -8,13 +7,14 @@ import {
   deleteDelivery,
   deleteIssue,
   getIssue,
+  getIssueById,
   issueMatchesFilter,
   labelWasAdded,
   listDeliveries,
   listIssues,
   updateIssue,
 } from "./issues.js";
-import type { IssueStatus } from "./types.js";
+import type { IssueStatus, Project, ProjectUpdate } from "./types.js";
 import {
   addHelixCompletionComment,
   addHelixPullRequestComment,
@@ -45,7 +45,7 @@ import {
   createPullRequest,
   clearPullRequests,
   deletePullRequest,
-  getPullRequest,
+  getPullRequestInProject,
   hasUnmergedPullRequest,
   listPullRequestReviews,
   listPullRequests,
@@ -58,6 +58,14 @@ import {
   isGitWorkingTree,
   mergePullRequestLocally,
 } from "./mergePullRequest.js";
+import {
+  createProject,
+  deleteProject,
+  getProject,
+  listProjects,
+  projectSettings,
+  updateProject,
+} from "./projects.js";
 
 export interface CreateAppOptions {
   db: Database.Database;
@@ -77,13 +85,46 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ ok: true });
   });
 
-  app.get("/api/config", (_req, res) => {
-    res.json(loadConfig(db));
+  app.get("/api/projects", (_req, res) => {
+    res.json(listProjects(db));
   });
 
-  app.patch("/api/config", async (req, res) => {
+  app.post("/api/projects", (req, res) => {
     const body = req.body as Record<string, unknown>;
-    const patch: Record<string, unknown> = {};
+    if (typeof body.title !== "string" || !body.title.trim()) {
+      res.status(400).json({ error: "title is required" });
+      return;
+    }
+    try {
+      const project = createProject(db, {
+        title: body.title,
+        slug: typeof body.slug === "string" ? body.slug : undefined,
+        webhookUrl: typeof body.webhookUrl === "string" ? body.webhookUrl : undefined,
+        labelFilter: typeof body.labelFilter === "string" ? body.labelFilter : undefined,
+        commentTrigger: typeof body.commentTrigger === "string" ? body.commentTrigger : undefined,
+        webhookEnabled: typeof body.webhookEnabled === "boolean" ? body.webhookEnabled : undefined,
+        baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
+      });
+      res.status(201).json(project);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:projectRef", (req, res) => {
+    const project = getProject(db, projectRefParam(req));
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    res.json(project);
+  });
+
+  app.patch("/api/projects/:projectRef", (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const patch: ProjectUpdate = {};
+    if (typeof body.title === "string") patch.title = body.title;
+    if (typeof body.slug === "string") patch.slug = body.slug;
     if (typeof body.webhookUrl === "string") patch.webhookUrl = body.webhookUrl.trim();
     if (typeof body.labelFilter === "string") patch.labelFilter = body.labelFilter.trim();
     if (typeof body.commentTrigger === "string" && body.commentTrigger.trim()) {
@@ -91,12 +132,29 @@ export function createApp(opts: CreateAppOptions): Express {
     }
     if (typeof body.webhookEnabled === "boolean") patch.webhookEnabled = body.webhookEnabled;
     if (typeof body.baseUrl === "string") patch.baseUrl = body.baseUrl.trim();
-    const config = saveConfig(db, patch as Parameters<typeof saveConfig>[1]);
-    res.json(config);
+    try {
+      const project = updateProject(db, projectRefParam(req), patch);
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      res.json(project);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
-  app.get("/api/issues", (req, res) => {
-    const config = loadConfig(db);
+  app.delete("/api/projects/:projectRef", (req, res) => {
+    if (!deleteProject(db, projectRefParam(req))) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    res.status(204).end();
+  });
+
+  app.get("/api/projects/:projectRef/issues", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const status = parseStatus(req.query.status);
     const label =
       typeof req.query.label === "string" && req.query.label.trim()
@@ -105,19 +163,20 @@ export function createApp(opts: CreateAppOptions): Express {
     const limit = Number(req.query.limit);
     const offset = Number(req.query.offset);
     res.json(
-      listIssues(db, config.baseUrl, {
+      listIssues(db, project, {
         status,
         label,
         limit: Number.isFinite(limit) ? limit : undefined,
         offset: Number.isFinite(offset) ? offset : undefined,
-      })
+      }),
     );
   });
 
-  app.get("/api/issues/:id", (req, res) => {
-    const config = loadConfig(db);
+  app.get("/api/projects/:projectRef/issues/:id", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const issue = getIssue(db, config.baseUrl, id);
+    const issue = getIssue(db, project, id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -125,10 +184,11 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ ...issue, helix: helixActivityForIssue(db, id) });
   });
 
-  app.get("/api/issues/:id/comments", (req, res) => {
-    const config = loadConfig(db);
+  app.get("/api/projects/:projectRef/issues/:id/comments", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const issue = getIssue(db, config.baseUrl, id);
+    const issue = getIssue(db, project, id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -136,10 +196,12 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json(listComments(db, id));
   });
 
-  app.post("/api/issues/:id/comments", async (req, res) => {
-    const config = loadConfig(db);
+  app.post("/api/projects/:projectRef/issues/:id/comments", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    const config = projectSettings(project);
     const id = Number(req.params.id);
-    const issue = getIssue(db, config.baseUrl, id);
+    const issue = getIssue(db, project, id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -169,7 +231,7 @@ export function createApp(opts: CreateAppOptions): Express {
       const parent = latestCompletedHelixRun(db, id);
       if (parent) {
         if (currentIssue.status === "closed") {
-          currentIssue = updateIssue(db, config.baseUrl, id, { status: "open" }) ?? currentIssue;
+          currentIssue = updateIssue(db, project, id, { status: "open" }) ?? currentIssue;
         }
         delivery = await dispatcher.dispatchContinuation(
           currentIssue,
@@ -194,8 +256,7 @@ export function createApp(opts: CreateAppOptions): Express {
           }
           if (currentIssue.status !== "in_progress") {
             currentIssue =
-              updateIssue(db, config.baseUrl, currentIssue.id, { status: "in_progress" }) ??
-              currentIssue;
+              updateIssue(db, project, currentIssue.id, { status: "in_progress" }) ?? currentIssue;
           }
         }
       }
@@ -203,11 +264,12 @@ export function createApp(opts: CreateAppOptions): Express {
     res.status(201).json({ ...comment, delivery, issue: currentIssue });
   });
 
-  app.patch("/api/issues/:issueId/comments/:commentId", (req, res) => {
-    const config = loadConfig(db);
+  app.patch("/api/projects/:projectRef/issues/:issueId/comments/:commentId", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const issueId = Number(req.params.issueId);
     const commentId = Number(req.params.commentId);
-    const issue = getIssue(db, config.baseUrl, issueId);
+    const issue = getIssue(db, project, issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -243,11 +305,12 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json(comment);
   });
 
-  app.delete("/api/issues/:issueId/comments/:commentId", (req, res) => {
-    const config = loadConfig(db);
+  app.delete("/api/projects/:projectRef/issues/:issueId/comments/:commentId", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const issueId = Number(req.params.issueId);
     const commentId = Number(req.params.commentId);
-    const issue = getIssue(db, config.baseUrl, issueId);
+    const issue = getIssue(db, project, issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -266,15 +329,17 @@ export function createApp(opts: CreateAppOptions): Express {
     res.status(204).end();
   });
 
-  app.post("/api/issues", async (req, res) => {
-    const config = loadConfig(db);
+  app.post("/api/projects/:projectRef/issues", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    const config = projectSettings(project);
     const body = req.body as Record<string, unknown>;
     if (typeof body.title !== "string" || !body.title.trim()) {
       res.status(400).json({ error: "title is required" });
       return;
     }
 
-    const issue = createIssue(db, config.baseUrl, {
+    const issue = createIssue(db, project, {
       title: body.title,
       body: typeof body.body === "string" ? body.body : "",
       labels: parseLabels(body.labels),
@@ -289,10 +354,12 @@ export function createApp(opts: CreateAppOptions): Express {
     res.status(201).json({ issue, delivery });
   });
 
-  app.patch("/api/issues/:id", async (req, res) => {
-    const config = loadConfig(db);
+  app.patch("/api/projects/:projectRef/issues/:id", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    const config = projectSettings(project);
     const id = Number(req.params.id);
-    const existing = getIssue(db, config.baseUrl, id);
+    const existing = getIssue(db, project, id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -306,7 +373,7 @@ export function createApp(opts: CreateAppOptions): Express {
     if (status) patch.status = status;
     if (body.labels !== undefined) patch.labels = parseLabels(body.labels);
 
-    const issue = updateIssue(db, config.baseUrl, id, patch);
+    const issue = updateIssue(db, project, id, patch);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -330,7 +397,8 @@ export function createApp(opts: CreateAppOptions): Express {
               issue,
               parent.runId,
               {
-                instruction: "Issue reopened. Re-evaluate the original issue and address any remaining work.",
+                instruction:
+                  "Issue reopened. Re-evaluate the original issue and address any remaining work.",
                 externalEventId: `issue-reopened:${issue.id}:${issue.updatedAt}`,
                 trigger: "issue.reopened",
               },
@@ -345,19 +413,22 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ issue, delivery });
   });
 
-  app.delete("/api/issues/:id", (req, res) => {
+  app.delete("/api/projects/:projectRef/issues/:id", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    if (!deleteIssue(db, id)) {
+    if (!deleteIssue(db, project.id, id)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
     res.status(204).end();
   });
 
-  app.post("/api/issues/:id/trigger", async (req, res) => {
-    const config = loadConfig(db);
+  app.post("/api/projects/:projectRef/issues/:id/trigger", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const issue = getIssue(db, config.baseUrl, id);
+    const issue = getIssue(db, project, id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -367,17 +438,23 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ issue, delivery });
   });
 
-  app.get("/api/pull-requests", (req, res) => {
+  app.get("/api/projects/:projectRef/pull-requests", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const status = parsePullRequestStatus(req.query.status);
-    res.json(listPullRequests(db, status));
+    res.json(listPullRequests(db, project.id, status));
   });
 
-  app.delete("/api/pull-requests", (_req, res) => {
-    const deleted = clearPullRequests(db);
+  app.delete("/api/projects/:projectRef/pull-requests", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    const deleted = clearPullRequests(db, project.id);
     res.json({ deleted });
   });
 
-  app.post("/api/pull-requests", (req, res) => {
+  app.post("/api/projects/:projectRef/pull-requests", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const body = req.body as Record<string, unknown>;
     const required = [
       "title",
@@ -398,12 +475,9 @@ export function createApp(opts: CreateAppOptions): Express {
       res.status(400).json({ error: "issueId must be a positive integer" });
       return;
     }
-    if (issueId) {
-      const config = loadConfig(db);
-      if (!getIssue(db, config.baseUrl, issueId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
+    if (issueId && !getIssue(db, project, issueId)) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
     }
     const origin = parsePullRequestOrigin(body.origin);
     if (body.origin !== undefined && !origin) {
@@ -411,6 +485,7 @@ export function createApp(opts: CreateAppOptions): Express {
       return;
     }
     const pullRequest = createPullRequest(db, {
+      projectId: project.id,
       issueId,
       title: String(body.title),
       description: typeof body.description === "string" ? body.description : "",
@@ -425,9 +500,11 @@ export function createApp(opts: CreateAppOptions): Express {
     res.status(201).json(pullRequest);
   });
 
-  app.get("/api/pull-requests/:id", async (req, res) => {
+  app.get("/api/projects/:projectRef/pull-requests/:id", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const pullRequest = getPullRequest(db, id);
+    const pullRequest = getPullRequestInProject(db, project.id, id);
     if (!pullRequest) {
       res.status(404).json({ error: "Pull request not found" });
       return;
@@ -435,7 +512,7 @@ export function createApp(opts: CreateAppOptions): Express {
     const helix = pullRequest.issueId ? helixActivityForIssue(db, pullRequest.issueId) : undefined;
     let mergeCommands = undefined;
     if (pullRequest.status === "ready_to_merge") {
-      const helixCwd = await dispatcher.fetchHelixWorkspaceCwd();
+      const helixCwd = await dispatcher.fetchHelixWorkspaceCwd(project);
       const commandPath =
         (await isGitWorkingTree(pullRequest.repositoryPath))
           ? pullRequest.repositoryPath
@@ -452,17 +529,21 @@ export function createApp(opts: CreateAppOptions): Express {
     });
   });
 
-  app.delete("/api/pull-requests/:id", (req, res) => {
+  app.delete("/api/projects/:projectRef/pull-requests/:id", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0 || !deletePullRequest(db, id)) {
+    if (!Number.isInteger(id) || id <= 0 || !deletePullRequest(db, project.id, id)) {
       res.status(404).json({ error: "Pull request not found" });
       return;
     }
     res.status(204).end();
   });
 
-  app.get("/api/pull-requests/:id/diff", async (req, res) => {
-    const pullRequest = getPullRequest(db, Number(req.params.id));
+  app.get("/api/projects/:projectRef/pull-requests/:id/diff", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    const pullRequest = getPullRequestInProject(db, project.id, Number(req.params.id));
     if (!pullRequest) {
       res.status(404).json({ error: "Pull request not found" });
       return;
@@ -476,10 +557,11 @@ export function createApp(opts: CreateAppOptions): Express {
     }
   });
 
-  app.post("/api/pull-requests/:id/merge", async (req, res) => {
-    const config = loadConfig(db);
+  app.post("/api/projects/:projectRef/pull-requests/:id/merge", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const existing = getPullRequest(db, id);
+    const existing = getPullRequestInProject(db, project.id, id);
     if (!existing) {
       res.status(404).json({ error: "Pull request not found" });
       return;
@@ -489,7 +571,7 @@ export function createApp(opts: CreateAppOptions): Express {
       return;
     }
 
-    const helixCwd = await dispatcher.fetchHelixWorkspaceCwd();
+    const helixCwd = await dispatcher.fetchHelixWorkspaceCwd(project);
     const commandPath =
       (await isGitWorkingTree(existing.repositoryPath))
         ? existing.repositoryPath
@@ -498,7 +580,6 @@ export function createApp(opts: CreateAppOptions): Express {
           : helixCwd || existing.repositoryPath;
     const mergeCommands = buildMergeCommandSnippet(existing, commandPath);
 
-    // Prefer Helix: it owns the git workspace Issues only learned about over webhooks.
     const helixMerge = await dispatcher.dispatchLocalPullRequestMerge(existing);
     if (helixMerge.success && helixMerge.mergeCommitSha) {
       const pullRequest = updatePullRequest(db, id, {
@@ -506,7 +587,7 @@ export function createApp(opts: CreateAppOptions): Express {
         mergeCommitSha: helixMerge.mergeCommitSha,
       });
       if (pullRequest?.issueId) {
-        updateIssue(db, config.baseUrl, pullRequest.issueId, { status: "closed" });
+        updateIssue(db, project, pullRequest.issueId, { status: "closed" });
       }
       res.json({
         pullRequest,
@@ -518,7 +599,6 @@ export function createApp(opts: CreateAppOptions): Express {
       return;
     }
 
-    // Same-machine fallback when Issues can see the recorded path.
     if (await isGitWorkingTree(existing.repositoryPath)) {
       try {
         const result = await mergePullRequestLocally(existing);
@@ -527,7 +607,7 @@ export function createApp(opts: CreateAppOptions): Express {
           mergeCommitSha: result.mergeCommitSha,
         });
         if (pullRequest?.issueId) {
-          updateIssue(db, config.baseUrl, pullRequest.issueId, { status: "closed" });
+          updateIssue(db, project, pullRequest.issueId, { status: "closed" });
         }
         res.json({
           pullRequest,
@@ -547,15 +627,18 @@ export function createApp(opts: CreateAppOptions): Express {
     }
 
     res.status(422).json({
-      error: helixMerge.error
-        ?? "Could not merge from Acme Issues. Helix is unavailable and the recorded repository path is not accessible — use the copyable git commands.",
+      error:
+        helixMerge.error ??
+        "Could not merge from Acme Issues. Helix is unavailable and the recorded repository path is not accessible — use the copyable git commands.",
       mergeCommands,
     });
   });
 
-  app.patch("/api/pull-requests/:id", (req, res) => {
+  app.patch("/api/projects/:projectRef/pull-requests/:id", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const existing = getPullRequest(db, id);
+    const existing = getPullRequestInProject(db, project.id, id);
     if (!existing) {
       res.status(404).json({ error: "Pull request not found" });
       return;
@@ -582,15 +665,16 @@ export function createApp(opts: CreateAppOptions): Express {
       mergeCommitSha: typeof body.mergeCommitSha === "string" ? body.mergeCommitSha : undefined,
     });
     if (pullRequest?.status === "merged" && pullRequest.issueId) {
-      const config = loadConfig(db);
-      updateIssue(db, config.baseUrl, pullRequest.issueId, { status: "closed" });
+      updateIssue(db, project, pullRequest.issueId, { status: "closed" });
     }
     res.json(pullRequest);
   });
 
-  app.post("/api/pull-requests/:id/review", async (req, res) => {
+  app.post("/api/projects/:projectRef/pull-requests/:id/review", async (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    const pullRequest = getPullRequest(db, id);
+    const pullRequest = getPullRequestInProject(db, project.id, id);
     if (!pullRequest) {
       res.status(404).json({ error: "Pull request not found" });
       return;
@@ -603,135 +687,149 @@ export function createApp(opts: CreateAppOptions): Express {
     res.status(delivery.success ? 202 : 502).json({ pullRequest, delivery });
   });
 
-  app.post("/api/pull-requests/:id/address-feedback", async (req, res) => {
-    const config = loadConfig(db);
-    const id = Number(req.params.id);
-    const pullRequest = getPullRequest(db, id);
-    if (!pullRequest) {
-      res.status(404).json({ error: "Pull request not found" });
-      return;
-    }
-    if (pullRequest.status !== "changes_requested" && pullRequest.status !== "blocked") {
-      res.status(409).json({
-        error: "Address feedback is only available when review requested changes or blocked the PR",
-      });
-      return;
-    }
-    if (!pullRequest.issueId) {
-      res.status(409).json({ error: "This pull request has no linked issue to continue" });
-      return;
-    }
-    if (!config.webhookEnabled) {
-      res.status(409).json({ error: "Webhooks are disabled" });
-      return;
-    }
-
-    const active = activeHelixRun(db, pullRequest.issueId);
-    if (active) {
-      res.status(409).json({
-        error: "A Helix run is already in progress for the linked issue",
-        activeRun: active,
-      });
-      return;
-    }
-
-    const reviews = listPullRequestReviews(db, pullRequest.id);
-    const latest = reviews.find(
-      (item) =>
-        item.headSha === pullRequest.headSha &&
-        item.status === "completed" &&
-        (item.decision === "changes_requested" || item.decision === "blocked"),
-    );
-    if (!latest) {
-      res.status(409).json({ error: "No completed failing review found for the current head SHA" });
-      return;
-    }
-
-    const parent = latestCompletedHelixRun(db, pullRequest.issueId);
-    if (!parent) {
-      res.status(409).json({
-        error: "No completed Helix implementation run is recorded for the linked issue",
-      });
-      return;
-    }
-
-    let issue = getIssue(db, config.baseUrl, pullRequest.issueId);
-    if (!issue) {
-      res.status(409).json({ error: "Linked issue was not found" });
-      return;
-    }
-    if (issue.status === "closed") {
-      issue = updateIssue(db, config.baseUrl, issue.id, { status: "open" }) ?? issue;
-    }
-
-    const instruction = buildAddressFeedbackInstruction(pullRequest, latest);
-    const comment = createComment(db, issue.id, {
-      body: [
-        `Addressing PR #${pullRequest.id} review feedback (${latest.decision}).`,
-        `Continuing Helix run ${parent.runId}.`,
-        "",
-        instruction,
-      ].join("\n"),
-      author: "acme-issues",
-      source: "system",
-    });
-
-    const delivery = await dispatcher.dispatchContinuation(
-      issue,
-      parent.runId,
-      {
-        instruction,
-        externalEventId: `pr-address-feedback:${pullRequest.id}:review:${latest.id}`,
-        trigger: "pull_request.address_feedback",
-        pullRequestId: pullRequest.id,
-        pullRequestHeadBranch: pullRequest.headBranch,
-      },
-      "pull_request.address_feedback",
-    );
-
-    let activeRun = undefined;
-    if (delivery?.success) {
-      const accepted = parseHelixContinuationResponse(delivery.responseBody);
-      if (accepted.runId) {
-        activeRun = recordPendingHelixRun(db, {
-          issueId: issue.id,
-          runId: accepted.runId,
-          parentRunId: parent.runId,
-          rootRunId: parent.rootRunId,
-          trigger: "pull_request.address_feedback",
+  app.post(
+    "/api/projects/:projectRef/pull-requests/:id/address-feedback",
+    async (req, res) => {
+      const project = requireProject(db, req, res);
+      if (!project) return;
+      const config = projectSettings(project);
+      const id = Number(req.params.id);
+      const pullRequest = getPullRequestInProject(db, project.id, id);
+      if (!pullRequest) {
+        res.status(404).json({ error: "Pull request not found" });
+        return;
+      }
+      if (pullRequest.status !== "changes_requested" && pullRequest.status !== "blocked") {
+        res.status(409).json({
+          error:
+            "Address feedback is only available when review requested changes or blocked the PR",
         });
+        return;
       }
-      if (issue.status !== "in_progress") {
-        issue = updateIssue(db, config.baseUrl, issue.id, { status: "in_progress" }) ?? issue;
+      if (!pullRequest.issueId) {
+        res.status(409).json({ error: "This pull request has no linked issue to continue" });
+        return;
       }
-    }
+      if (!config.webhookEnabled) {
+        res.status(409).json({ error: "Webhooks are disabled" });
+        return;
+      }
 
-    res.status(delivery?.success ? 202 : 502).json({
-      pullRequest,
-      issue,
-      comment,
-      parentRunId: parent.runId,
-      activeRun,
-      delivery,
-    });
-  });
+      const active = activeHelixRun(db, pullRequest.issueId);
+      if (active) {
+        res.status(409).json({
+          error: "A Helix run is already in progress for the linked issue",
+          activeRun: active,
+        });
+        return;
+      }
 
-  app.get("/api/webhooks/deliveries", (req, res) => {
+      const reviews = listPullRequestReviews(db, pullRequest.id);
+      const latest = reviews.find(
+        (item) =>
+          item.headSha === pullRequest.headSha &&
+          item.status === "completed" &&
+          (item.decision === "changes_requested" || item.decision === "blocked"),
+      );
+      if (!latest) {
+        res.status(409).json({
+          error: "No completed failing review found for the current head SHA",
+        });
+        return;
+      }
+
+      const parent = latestCompletedHelixRun(db, pullRequest.issueId);
+      if (!parent) {
+        res.status(409).json({
+          error: "No completed Helix implementation run is recorded for the linked issue",
+        });
+        return;
+      }
+
+      let issue = getIssue(db, project, pullRequest.issueId);
+      if (!issue) {
+        res.status(409).json({ error: "Linked issue was not found" });
+        return;
+      }
+      if (issue.status === "closed") {
+        issue = updateIssue(db, project, issue.id, { status: "open" }) ?? issue;
+      }
+
+      const instruction = buildAddressFeedbackInstruction(pullRequest, latest);
+      const comment = createComment(db, issue.id, {
+        body: [
+          `Addressing PR #${pullRequest.id} review feedback (${latest.decision}).`,
+          `Continuing Helix run ${parent.runId}.`,
+          "",
+          instruction,
+        ].join("\n"),
+        author: "acme-issues",
+        source: "system",
+      });
+
+      const delivery = await dispatcher.dispatchContinuation(
+        issue,
+        parent.runId,
+        {
+          instruction,
+          externalEventId: `pr-address-feedback:${pullRequest.id}:review:${latest.id}`,
+          trigger: "pull_request.address_feedback",
+          pullRequestId: pullRequest.id,
+          pullRequestHeadBranch: pullRequest.headBranch,
+        },
+        "pull_request.address_feedback",
+      );
+
+      let activeRun = undefined;
+      if (delivery?.success) {
+        const accepted = parseHelixContinuationResponse(delivery.responseBody);
+        if (accepted.runId) {
+          activeRun = recordPendingHelixRun(db, {
+            issueId: issue.id,
+            runId: accepted.runId,
+            parentRunId: parent.runId,
+            rootRunId: parent.rootRunId,
+            trigger: "pull_request.address_feedback",
+          });
+        }
+        if (issue.status !== "in_progress") {
+          issue = updateIssue(db, project, issue.id, { status: "in_progress" }) ?? issue;
+        }
+      }
+
+      res.status(delivery?.success ? 202 : 502).json({
+        pullRequest,
+        issue,
+        comment,
+        parentRunId: parent.runId,
+        activeRun,
+        delivery,
+      });
+    },
+  );
+
+  app.get("/api/projects/:projectRef/webhooks/deliveries", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const limit = Number(req.query.limit ?? 50);
-    res.json(listDeliveries(db, Number.isFinite(limit) ? limit : 50));
+    res.json(listDeliveries(db, project.id, Number.isFinite(limit) ? limit : 50));
   });
 
-  app.delete("/api/webhooks/deliveries/:id", (req, res) => {
+  app.delete("/api/projects/:projectRef/webhooks/deliveries/:id", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0 || !deleteDelivery(db, id)) {
+    if (!Number.isInteger(id) || id <= 0 || !deleteDelivery(db, project.id, id)) {
       res.status(404).json({ error: "Delivery not found" });
       return;
     }
     res.status(204).end();
   });
 
-  app.delete("/api/webhooks/deliveries", (_req, res) => {
-    const deleted = clearDeliveries(db);
+  app.delete("/api/projects/:projectRef/webhooks/deliveries", (req, res) => {
+    const project = requireProject(db, req, res);
+    if (!project) return;
+    const deleted = clearDeliveries(db, project.id);
     res.json({ deleted });
   });
 
@@ -762,12 +860,13 @@ export function createApp(opts: CreateAppOptions): Express {
       return;
     }
 
-    const config = loadConfig(db);
-    const existing = getIssue(db, config.baseUrl, issueId);
-    if (!existing) {
+    const resolved = getIssueById(db, issueId);
+    if (!resolved) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    const { project } = resolved;
+    let existing = resolved.issue;
 
     const payload = req.body as HelixRunPayload;
     recordHelixRun(db, issueId, payload);
@@ -781,7 +880,7 @@ export function createApp(opts: CreateAppOptions): Express {
         res.status(200).json({ ok: true, issue: existing, alreadyInProgress: true });
         return;
       }
-      const issue = updateIssue(db, config.baseUrl, issueId, { status: "in_progress" });
+      const issue = updateIssue(db, project, issueId, { status: "in_progress" });
       const comment = addHelixStartComment(db, issueId, payload);
       res.status(200).json({ ok: true, issue, comment });
       return;
@@ -793,15 +892,16 @@ export function createApp(opts: CreateAppOptions): Express {
     }
 
     if (hasUnmergedPullRequest(db, issueId)) {
-      const issue = existing.status === "in_progress"
-        ? existing
-        : updateIssue(db, config.baseUrl, issueId, { status: "in_progress" });
+      const issue =
+        existing.status === "in_progress"
+          ? existing
+          : updateIssue(db, project, issueId, { status: "in_progress" });
       const comment = addHelixPullRequestComment(db, issueId, payload);
       res.status(200).json({ ok: true, issue, comment, awaitingPullRequest: true });
       return;
     }
 
-    const issue = updateIssue(db, config.baseUrl, issueId, { status: "closed" });
+    const issue = updateIssue(db, project, issueId, { status: "closed" });
     const comment = addHelixCompletionComment(db, issueId, payload);
     res.status(200).json({ ok: true, issue, comment });
   });
@@ -814,13 +914,30 @@ export function createApp(opts: CreateAppOptions): Express {
 export function startServer(opts: CreateAppOptions & { port: number; host?: string }): void {
   const host = opts.host ?? "127.0.0.1";
   const baseUrl = `http://${host}:${opts.port}`;
-  setBaseUrl(opts.db, baseUrl);
 
   const app = createApp(opts);
   const server = app.listen(opts.port, host, () => {
     console.log(`Acme Issues  ${baseUrl}${webFromSource() ? "  (web from source)" : ""}`);
   });
   attachHmr(server);
+}
+
+function projectRefParam(req: Request): string {
+  const raw = req.params.projectRef;
+  return Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
+}
+
+function requireProject(
+  db: Database.Database,
+  req: Request,
+  res: Response,
+): Project | null {
+  const project = getProject(db, projectRefParam(req));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return null;
+  }
+  return project;
 }
 
 function parseStatus(value: unknown): IssueStatus | undefined {

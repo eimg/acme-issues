@@ -1,4 +1,5 @@
 import type { Issue, Project } from "./types.js";
+import { serviceAuthHeaderFor } from "./serviceAuth.js";
 
 export type ProjectsLifecycleEvent =
   | "implementation.started"
@@ -28,6 +29,7 @@ export async function notifyProjectsLifecycle(
     fetchFn?: FetchFn;
     pullRequestId?: number;
     externalEventId: string;
+    trustedOrigins?: string[];
   },
 ): Promise<{ ok: boolean; error?: string } | null> {
   const callbackUrl = issue.projectsCallbackUrl?.trim();
@@ -52,6 +54,12 @@ export async function notifyProjectsLifecycle(
         "X-Issues-Event": event,
         "X-Issues-Issue-Id": String(issue.id),
         "X-Issues-Project-Id": String(project.id),
+        ...serviceAuthHeaderFor(callbackUrl, process.env.ACME_PROJECTS_TOKEN, {
+          configuredOrigins: opts.trustedOrigins,
+          envOrigins: process.env.ACME_TRUSTED_PROJECTS_ORIGINS,
+          defaultOrigin: "http://127.0.0.1:8321",
+          tokenName: "ACME_PROJECTS_TOKEN",
+        }),
       },
       body: JSON.stringify(payload),
     });

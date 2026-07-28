@@ -1,7 +1,9 @@
 # Intended Acme Projects workflow
 
 **Status:** Acme Projects can create a non-triggering issue through the existing
-Acme Issues API. Automatic trigger and lifecycle callbacks remain planned.
+Acme Issues API, and authenticated lifecycle callbacks project accepted runs,
+PR creation, and human-recorded merges back to the source card. Adding the
+configured trigger label remains an explicit human action.
 
 This document covers the existing-repository feature path. Brand-new project
 inception belongs to **Prelude**, which drafts freeform docs and exports

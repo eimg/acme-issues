@@ -978,7 +978,10 @@ describe("acme-issues API", () => {
 
     const dispatcher = new WebhookDispatcher({
       db,
+      authToken: "svc_helix_test",
+      trustedOrigins: ["http://helix.test"],
       fetchFn: async (url, init) => {
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer svc_helix_test");
         const href = String(url);
         if (href.endsWith("/workspace")) {
           return new Response(JSON.stringify({ cwd: "/tmp/helix-workspace" }), { status: 200 });

@@ -17,6 +17,7 @@ import type {
   PullRequestReviewWebhookPayload,
   WebhookDelivery,
 } from "./types.js";
+import { serviceAuthHeaderFor } from "./serviceAuth.js";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAYS_MS = [0, 500, 1500];
@@ -24,15 +25,21 @@ const RETRY_DELAYS_MS = [0, 500, 1500];
 export interface WebhookDispatcherOptions {
   db: Database.Database;
   fetchFn?: typeof fetch;
+  authToken?: string;
+  trustedOrigins?: string[];
 }
 
 export class WebhookDispatcher {
   private readonly db: Database.Database;
   private readonly fetchFn: typeof fetch;
+  private readonly authToken: string | undefined;
+  private readonly trustedOrigins: string[] | undefined;
 
   constructor(opts: WebhookDispatcherOptions) {
     this.db = opts.db;
     this.fetchFn = opts.fetchFn ?? fetch;
+    this.authToken = opts.authToken ?? process.env.ACME_HELIX_TOKEN;
+    this.trustedOrigins = opts.trustedOrigins;
   }
 
   shouldAutoTrigger(issue: Issue, config: AppConfig): boolean {
@@ -167,6 +174,12 @@ export class WebhookDispatcher {
           "X-Issues-Pull-Request-Id": String(pullRequest.id),
           "X-Issues-Project-Id": String(project.id),
           "X-Issues-Source": project.baseUrl.replace(/\/$/, ""),
+          ...serviceAuthHeaderFor(url, this.authToken, {
+            configuredOrigins: this.trustedOrigins,
+            envOrigins: process.env.ACME_TRUSTED_HELIX_ORIGINS,
+            defaultOrigin: "http://127.0.0.1:8319",
+            tokenName: "ACME_HELIX_TOKEN",
+          }),
         },
         body: JSON.stringify(payload),
       });
@@ -227,6 +240,12 @@ export class WebhookDispatcher {
           "X-Issues-Pull-Request-Id": String(pullRequest.id),
           "X-Issues-Project-Id": String(project.id),
           "X-Issues-Source": project.baseUrl.replace(/\/$/, ""),
+          ...serviceAuthHeaderFor(url, this.authToken, {
+            configuredOrigins: this.trustedOrigins,
+            envOrigins: process.env.ACME_TRUSTED_HELIX_ORIGINS,
+            defaultOrigin: "http://127.0.0.1:8319",
+            tokenName: "ACME_HELIX_TOKEN",
+          }),
         },
         body: JSON.stringify({
           projectId: project.id,
@@ -288,7 +307,15 @@ export class WebhookDispatcher {
     const url = helixWorkspaceUrl(project.webhookUrl);
     if (!url) return undefined;
     try {
-      const res = await this.fetchFn(url, { method: "GET" });
+      const res = await this.fetchFn(url, {
+        method: "GET",
+        headers: serviceAuthHeaderFor(url, this.authToken, {
+          configuredOrigins: this.trustedOrigins,
+          envOrigins: process.env.ACME_TRUSTED_HELIX_ORIGINS,
+          defaultOrigin: "http://127.0.0.1:8319",
+          tokenName: "ACME_HELIX_TOKEN",
+        }),
+      });
       if (!res.ok) return undefined;
       const body = await res.json() as { cwd?: unknown };
       return typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : undefined;
@@ -308,6 +335,26 @@ export class WebhookDispatcher {
     let lastBody: string | null = null;
     let lastError: string | null = null;
     const trackerUrl = project.baseUrl.replace(/\/$/, "");
+    let authorizationHeaders: Record<string, string>;
+    try {
+      authorizationHeaders = serviceAuthHeaderFor(url, this.authToken, {
+        configuredOrigins: this.trustedOrigins,
+        envOrigins: process.env.ACME_TRUSTED_HELIX_ORIGINS,
+        defaultOrigin: "http://127.0.0.1:8319",
+        tokenName: "ACME_HELIX_TOKEN",
+      });
+    } catch (error) {
+      return recordDelivery(this.db, {
+        issueId,
+        url,
+        payload,
+        statusCode: null,
+        responseBody: null,
+        success: false,
+        attempts: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const delay = RETRY_DELAYS_MS[attempt - 1] ?? 1500;
@@ -322,6 +369,7 @@ export class WebhookDispatcher {
             "X-Issues-Issue-Id": String(issueId),
             "X-Issues-Project-Id": String(project.id),
             "X-Issues-Source": trackerUrl,
+            ...authorizationHeaders,
           },
           body: JSON.stringify(payload),
         });

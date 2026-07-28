@@ -6,10 +6,11 @@ Pairs naturally with [Helix](https://github.com/eimg/helix) for local agent-driv
 
 ## Acme development testbed
 
-Acme Issues is one of six related projects. They remain separate products with separate responsibilities.
+Acme Issues is one of seven related projects. They remain separate products with separate responsibilities.
 
 | Project | Role |
 |---|---|
+| **[Acme Identity](https://github.com/eimg/acme-identity)** | Suite auth; Issues resolves principals and enforces capability permissions. |
 | **[Primer](https://github.com/eimg/primer)** | Knowledge product and fictional Acme evidence corpus; not currently part of the Issues → Helix runtime loop. |
 | **[Prelude](https://github.com/eimg/prelude)** | Project inception workspace; exports bootstrap artifacts for Helix empty-workspace bootstrap. |
 | **[Helix](https://github.com/eimg/helix)** | Agent workflow control plane that receives work and orchestrates changes. |
@@ -92,6 +93,32 @@ npm run dev
 Open the project title in the header to select or create a project, then open
 **Settings** for that project’s webhook URL, callback URL, and label filter.
 Create issues from the UI or nested project API.
+
+### Authentication and permissions
+
+Acme Issues defaults to `ACME_AUTH_MODE=off`, which resolves an admin development
+principal locally. This keeps standalone development and existing feature tests
+independent of Acme Identity. For real sign-in and role checks, start both apps:
+
+```bash
+# in ../acme-identity
+ACME_AUTH_MODE=local npm run dev
+
+# in this repository
+ACME_AUTH_MODE=local ACME_IDENTITY_URL=http://127.0.0.1:8316 npm run dev
+```
+
+The browser signs in through Acme Issues, which forwards the session request to
+Identity. `issues.read` is read-only; `issues.write` can both read and mutate.
+The UI and API check permission strings rather than role names, so later custom
+roles work without code changes. The built-in `viewer` is read-only, while
+`member`, `operator`, and `admin` can mutate Issues data.
+
+API clients and trusted producers may send an Identity service token as
+`Authorization: Bearer svc_…`. The local Helix callback at
+`POST /api/webhooks/helix` requires `issues.write` like other mutations. In
+`ACME_AUTH_MODE=local`, configure Helix with a service token through
+`HELIX_ISSUES_TOKEN`; browser cookies are not required for machine callbacks.
 
 ### Recommended: Helix integration
 
@@ -238,7 +265,13 @@ X-Helix-Event: run.started
 
 → issue status `in_progress` + Helix comment
 
-Callbacks use no auth — intended for local development.
+In local auth mode, callbacks use bearer service auth. Set `ACME_HELIX_TOKEN` for
+Issues requests to Helix and `ACME_PROJECTS_TOKEN` for lifecycle callbacks to
+Projects. Off mode remains zero-configuration for standalone development.
+The tokens are sent only to `ACME_TRUSTED_HELIX_ORIGINS` and
+`ACME_TRUSTED_PROJECTS_ORIGINS` respectively (defaults: the local `8319` and
+`8321` origins). Changing a project or callback URL cannot redirect a service
+credential to another origin.
 
 ### Local PR review callbacks
 

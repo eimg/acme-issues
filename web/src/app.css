@@ -369,6 +369,72 @@ body {
   flex-shrink: 0;
 }
 
+.identity-chip {
+  display: grid;
+  gap: 1px;
+  padding: 4px 10px;
+  border-left: 1px solid var(--border);
+  line-height: 1.2;
+}
+
+.identity-chip strong {
+  font-size: 12px;
+}
+
+.identity-chip span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(390px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-card .brand-mark {
+  margin-bottom: 2px;
+}
+
+.auth-card h1,
+.auth-card p {
+  margin: 0;
+}
+
+.auth-card h1 {
+  font-size: 22px;
+}
+
+.auth-eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.auth-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.input[readonly] {
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+}
+
 .helix-target-status {
   display: inline-flex;
   align-items: center;

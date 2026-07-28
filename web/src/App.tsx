@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   useMutation,
   useQuery,
@@ -21,6 +21,8 @@ import type {
   WebhookDelivery,
 } from "../../src/types";
 import type { HelixStatus } from "../../src/helixStatus";
+import { hasPermission } from "acme-identity/permissions";
+import type { AuthMode, Principal } from "acme-identity/types";
 import { api, formatStatus, formatTime, projectApiPath } from "./api";
 
 type View = "issues" | "pull-requests";
@@ -36,11 +38,72 @@ type PullRequestDetailData = PullRequest & {
   };
 };
 
+type AuthSession = {
+  schemaVersion: "acme.session.v1";
+  authMode: AuthMode;
+  principal: Principal;
+};
+
+type IssuesAuth = {
+  session: AuthSession;
+  canWrite: boolean;
+  signOut: () => void;
+  signingOut: boolean;
+};
+
+const IssuesAuthContext = createContext<IssuesAuth | null>(null);
+
+function useIssuesAuth(): IssuesAuth {
+  const value = useContext(IssuesAuthContext);
+  if (!value) throw new Error("Issues auth context is unavailable");
+  return value;
+}
+
 function parseScreen(value: string | null): Screen {
   return value === "settings" || value === "new-project" ? value : "workspace";
 }
 
 export function App() {
+  const client = useQueryClient();
+  const auth = useQuery({
+    queryKey: ["auth-session"],
+    queryFn: () => api<AuthSession>("/api/auth/session"),
+    retry: false,
+  });
+  const signOut = useMutation({
+    mutationFn: () => api("/api/auth/session", { method: "DELETE" }),
+    onSuccess: async () => {
+      client.clear();
+      await auth.refetch();
+    },
+  });
+
+  if (auth.isLoading) return <AuthLoading />;
+  if (!auth.data?.principal) {
+    return (
+      <Login
+        error={auth.error?.message === "Authentication required" ? undefined : auth.error?.message}
+        onSignedIn={async () => {
+          await client.invalidateQueries({ queryKey: ["auth-session"] });
+        }}
+      />
+    );
+  }
+
+  return (
+    <IssuesAuthContext.Provider value={{
+      session: auth.data,
+      canWrite: hasPermission(auth.data.principal, "issues.write"),
+      signOut: () => signOut.mutate(),
+      signingOut: signOut.isPending,
+    }}>
+      <AuthenticatedApp />
+    </IssuesAuthContext.Provider>
+  );
+}
+
+function AuthenticatedApp() {
+  const { canWrite } = useIssuesAuth();
   const deepLink = new URLSearchParams(location.search);
   const initialPr = positiveNumber(deepLink.get("pr"));
   const initialIssue = positiveNumber(deepLink.get("issue"));
@@ -60,6 +123,12 @@ export function App() {
   const selectedProject = projects.data?.find((item) => item.slug === selectedSlug)
     ?? (prProjectResolved ? projects.data?.[0] : null)
     ?? null;
+
+  useEffect(() => {
+    if (!canWrite && screen !== "workspace") {
+      setScreen("workspace");
+    }
+  }, [canWrite, screen]);
 
   useEffect(() => {
     if (!initialPr || initialProjectSlug || !projects.data?.length) {
@@ -133,7 +202,7 @@ export function App() {
   if (!projects.data?.length) {
     return (
       <>
-        {screen === "new-project" ? (
+        {screen === "new-project" && canWrite ? (
           <NewProjectScreen
             onBack={() => setScreen("workspace")}
             onCreated={(project) => {
@@ -143,7 +212,7 @@ export function App() {
             }}
           />
         ) : (
-          <EmptyProjectsState onCreate={() => setScreen("new-project")} />
+          <EmptyProjectsState onCreate={canWrite ? () => setScreen("new-project") : undefined} />
         )}
         {toast && <div className="toast" role="status">{toast}</div>}
       </>
@@ -153,7 +222,7 @@ export function App() {
     return <p className="query-state">Loading project…</p>;
   }
 
-  if (screen === "settings") {
+  if (screen === "settings" && canWrite) {
     return (
       <>
         <SettingsScreen
@@ -177,7 +246,7 @@ export function App() {
     );
   }
 
-  if (screen === "new-project") {
+  if (screen === "new-project" && canWrite) {
     return (
       <>
         <NewProjectScreen
@@ -204,9 +273,9 @@ export function App() {
           else setSelectedIssueId(null);
         }}
         onSelectProject={selectProject}
-        onNewProject={() => setScreen("new-project")}
-        onSettings={() => setScreen("settings")}
-        onNewIssue={() => setDialog("issue")}
+        onNewProject={canWrite ? () => setScreen("new-project") : undefined}
+        onSettings={canWrite ? () => setScreen("settings") : undefined}
+        onNewIssue={canWrite ? () => setDialog("issue") : undefined}
       />
       {view === "issues" ? (
         <IssuesWorkspace
@@ -224,7 +293,7 @@ export function App() {
           showToast={showToast}
         />
       )}
-      {dialog === "issue" && (
+      {canWrite && dialog === "issue" && (
         <NewIssueDialog
           project={selectedProject}
           onClose={() => setDialog(null)}
@@ -256,10 +325,11 @@ function Header({
   project: Project;
   onView: (view: View) => void;
   onSelectProject: (slug: string) => void;
-  onNewProject: () => void;
-  onSettings: () => void;
-  onNewIssue: () => void;
+  onNewProject?: () => void;
+  onSettings?: () => void;
+  onNewIssue?: () => void;
 }) {
+  const { session, signOut, signingOut } = useIssuesAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -308,7 +378,7 @@ function Header({
                     <span className="project-dropdown-slug">{item.slug}</span>
                   </button>
                 ))}
-                <button
+                {onNewProject && <button
                   type="button"
                   className="project-dropdown-item project-dropdown-new"
                   onClick={() => {
@@ -317,7 +387,7 @@ function Header({
                   }}
                 >
                   <Icon name="plus" /> New project
-                </button>
+                </button>}
               </div>
             )}
           </div>
@@ -340,12 +410,19 @@ function Header({
             Pull requests
           </button>
         </div>
-        <button className="btn btn-ghost" onClick={onSettings}>
+        <div className="identity-chip" title={session.principal.permissions.join(", ")}>
+          <strong>{session.principal.displayName}</strong>
+          <span>{session.principal.roles.join(", ") || session.principal.kind}</span>
+        </div>
+        {session.authMode === "local" && (
+          <button className="btn btn-ghost" disabled={signingOut} onClick={signOut}>Sign out</button>
+        )}
+        {onSettings && <button className="btn btn-ghost" onClick={onSettings}>
           <Icon name="settings" /> Settings
-        </button>
-        <button className="btn btn-primary" onClick={onNewIssue}>
+        </button>}
+        {onNewIssue && <button className="btn btn-primary" onClick={onNewIssue}>
           <Icon name="plus" /> New issue
-        </button>
+        </button>}
       </div>
     </header>
   );
@@ -657,6 +734,7 @@ function IssueEditor(props: {
   onDeleteComment: (commentId: number) => void;
   onDelete: () => void;
 }) {
+  const { canWrite } = useIssuesAuth();
   const [title, setTitle] = useState(props.issue.title);
   const [body, setBody] = useState(props.issue.body);
   const [labels, setLabels] = useState(props.issue.labels.join(", "));
@@ -668,7 +746,7 @@ function IssueEditor(props: {
     <div className="issue-detail">
       <div className="detail-header">
         <span className="issue-number">Issue #{props.issue.id}</span>
-        <div className="detail-actions">
+        {canWrite && <div className="detail-actions">
           <button className="btn btn-secondary" disabled={props.busy || Boolean(activeRun)} onClick={props.onTrigger}>
             <Icon name="zap" /> Send webhook
           </button>
@@ -678,16 +756,16 @@ function IssueEditor(props: {
           <button className="btn btn-danger" disabled={props.busy} onClick={props.onDelete}>
             <Icon name="trash" /> Delete
           </button>
-        </div>
+        </div>}
       </div>
       {activeRun && <HelixRunBanner run={activeRun} />}
-      <input className="input title-input" value={title} onChange={(event) => setTitle(event.target.value)} />
-      <textarea className="input body-input" rows={12} value={body} onChange={(event) => setBody(event.target.value)} />
+      <input className="input title-input" value={title} readOnly={!canWrite} onChange={(event) => setTitle(event.target.value)} />
+      <textarea className="input body-input" rows={12} value={body} readOnly={!canWrite} onChange={(event) => setBody(event.target.value)} />
       <div className="labels-row">
         <label>Labels</label>
         <div className="labels-row-fields">
-          <input className="input" value={labels} onChange={(event) => setLabels(event.target.value)} />
-          <button
+          <input className="input" value={labels} readOnly={!canWrite} onChange={(event) => setLabels(event.target.value)} />
+          {canWrite && <button
             className="btn btn-primary"
             disabled={props.busy}
             onClick={() => props.onSave({
@@ -697,7 +775,7 @@ function IssueEditor(props: {
             })}
           >
             Save
-          </button>
+          </button>}
         </div>
       </div>
       <p className="meta">{formatStatus(props.issue.status)} · updated {formatTime(props.issue.updatedAt)}</p>
@@ -713,7 +791,7 @@ function IssueEditor(props: {
                 <span className="comment-author">{item.author}</span>
                 <div className="comment-head-actions">
                   <span>{formatTime(item.createdAt)}</span>
-                  {item.source === "user" && (
+                  {canWrite && item.source === "user" && (
                     <div className="comment-actions">
                       <button
                         type="button"
@@ -764,7 +842,7 @@ function IssueEditor(props: {
           ))}
           {!props.comments.length && <li className="comment-empty">No comments yet.</li>}
         </ul>
-        <form
+        {canWrite && <form
           className="comment-form"
           onSubmit={(event) => {
             event.preventDefault();
@@ -790,7 +868,7 @@ function IssueEditor(props: {
               Add comment
             </button>
           </div>
-        </form>
+        </form>}
       </section>
     </div>
   );
@@ -827,6 +905,7 @@ function DeliveriesPanel({
   query: UseQueryResult<WebhookDelivery[], Error>;
   showToast: (message: string) => void;
 }) {
+  const { canWrite } = useIssuesAuth();
   const client = useQueryClient();
   const clear = useMutation({
     mutationFn: () => api(projectApiPath(project.slug, "/webhooks/deliveries"), { method: "DELETE" }),
@@ -850,7 +929,7 @@ function DeliveriesPanel({
           <button className="btn btn-ghost btn-sm" onClick={() => query.refetch()}>
             <Icon name="refresh" /> Refresh
           </button>
-          <button className="btn btn-ghost btn-sm" disabled={clear.isPending} onClick={() => clear.mutate()}>Clear</button>
+          {canWrite && <button className="btn btn-ghost btn-sm" disabled={clear.isPending} onClick={() => clear.mutate()}>Clear</button>}
         </div>
       </div>
       <ul className="delivery-list">
@@ -862,7 +941,7 @@ function DeliveriesPanel({
                   ? `HTTP ${delivery.statusCode}`
                   : delivery.error || `HTTP ${delivery.statusCode ?? "error"}`}
               </div>
-              <button
+              {canWrite && <button
                 type="button"
                 className="btn btn-ghost btn-sm delivery-remove-btn"
                 aria-label="Remove delivery"
@@ -870,7 +949,7 @@ function DeliveriesPanel({
                 onClick={() => remove.mutate(delivery.id)}
               >
                 ×
-              </button>
+              </button>}
             </div>
             <div className="delivery-meta">
               {formatTime(delivery.createdAt)} · {delivery.attempts} attempt(s)
@@ -895,6 +974,7 @@ function PullRequestsWorkspace({
   onSelect: (id: number | null) => void;
   showToast: (message: string) => void;
 }) {
+  const { canWrite } = useIssuesAuth();
   const client = useQueryClient();
   const [status, setStatus] = useState<PullRequestStatus | "">("");
   const list = useQuery({
@@ -922,7 +1002,7 @@ function PullRequestsWorkspace({
             <button className="btn btn-ghost btn-sm" onClick={() => list.refetch()}>
               <Icon name="refresh" /> Refresh
             </button>
-            <button
+            {canWrite && <button
               className="btn btn-ghost btn-sm"
               disabled={clear.isPending || !list.data?.length}
               onClick={() => {
@@ -931,7 +1011,7 @@ function PullRequestsWorkspace({
               }}
             >
               {clear.isPending ? "Clearing…" : "Clear"}
-            </button>
+            </button>}
           </div>
         </div>
         <div className="filters pr-filters">
@@ -991,6 +1071,7 @@ function PullRequestDetail({
   showToast: (message: string) => void;
   onDeleted: () => void;
 }) {
+  const { canWrite } = useIssuesAuth();
   const client = useQueryClient();
   const detail = useQuery({
     queryKey: ["pull-request", project.slug, id],
@@ -1089,7 +1170,7 @@ function PullRequestDetail({
       <article className="pr-detail">
         <div className="pr-detail-head">
           <div><span className="issue-number">Local PR #{pr.id}</span><h2>{pr.title}</h2></div>
-          <div className="detail-actions">
+          {canWrite && <div className="detail-actions">
             {!closed && needsFeedback && (
               <button
                 className="btn btn-primary"
@@ -1163,7 +1244,7 @@ function PullRequestDetail({
             >
               {remove.isPending ? "Deleting…" : "Delete"}
             </button>
-          </div>
+          </div>}
         </div>
         {activeRun && <HelixRunBanner run={activeRun} />}
         <div className={`pr-status-banner ${pr.status}`}>{formatStatus(pr.status)}</div>
@@ -1512,18 +1593,66 @@ function FormScreen({
   );
 }
 
-function EmptyProjectsState({ onCreate }: { onCreate: () => void }) {
+function EmptyProjectsState({ onCreate }: { onCreate?: () => void }) {
   return (
     <main className="empty-projects">
       <div className="empty-state">
         <BrandMark />
         <p className="empty-title">No projects yet</p>
-        <p className="empty-hint">Create your first project to start tracking issues and local pull requests.</p>
-        <button type="button" className="btn btn-primary" onClick={onCreate}>
+        <p className="empty-hint">{onCreate
+          ? "Create your first project to start tracking issues and local pull requests."
+          : "No projects are available. Ask someone with Issues write access to create one."}</p>
+        {onCreate && <button type="button" className="btn btn-primary" onClick={onCreate}>
           <Icon name="plus" /> Create first project
-        </button>
+        </button>}
       </div>
     </main>
+  );
+}
+
+function AuthLoading() {
+  return (
+    <div className="auth-page">
+      <div className="auth-card"><p>Resolving Acme identity…</p></div>
+    </div>
+  );
+}
+
+function Login({ error, onSignedIn }: { error?: string; onSignedIn: () => Promise<void> }) {
+  const [message, setMessage] = useState(error ?? "");
+  const login = useMutation({
+    mutationFn: (credentials: { username: string; password: string }) =>
+      api("/api/auth/session", { method: "POST", body: JSON.stringify(credentials) }),
+    onSuccess: onSignedIn,
+    onError: (loginError: Error) => setMessage(loginError.message),
+  });
+  return (
+    <div className="auth-page">
+      <form
+        className="auth-card"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          login.mutate({
+            username: String(form.get("username") ?? ""),
+            password: String(form.get("password") ?? ""),
+          });
+        }}
+      >
+        <BrandMark />
+        <div><p className="auth-eyebrow">Acme Identity</p><h1>Sign in to Acme Issues</h1></div>
+        <Field label="Username">
+          <input name="username" className="input" autoComplete="username" autoFocus required />
+        </Field>
+        <Field label="Password">
+          <input name="password" className="input" type="password" autoComplete="current-password" required />
+        </Field>
+        {message && <p className="auth-error" role="alert">{message}</p>}
+        <button className="btn btn-primary" type="submit" disabled={login.isPending}>
+          {login.isPending ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+    </div>
   );
 }
 

@@ -6,6 +6,7 @@ Acme Issues is the local issue and pull-request management surface for Helix. It
 
 | Project | Local path | Responsibility |
 |---|---|---|
+| Acme Identity | `~/Desktop/acme/acme-identity` | Shared suite principals, browser sessions, roles, and capability permissions. |
 | Primer | `~/Desktop/acme/primer` | Knowledge product and fictional Acme evidence corpus; outside the Issues → Helix runtime loop. |
 | Prelude | `~/Desktop/acme/prelude` | Project inception drafting and bootstrap artifact export for Helix empty-workspace bootstrap. |
 | Helix | `~/Desktop/acme/helix` | Agent workflow control plane that receives work and orchestrates changes. |
@@ -35,5 +36,9 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
 - Preserve the planned boundary that Acme Projects owns feature intent while
   Acme Issues owns the generated implementation attempt and PR lifecycle.
 - Do not add GitHub as a requirement for the local webhook loop.
-- Keep callbacks unauthenticated only while the server remains a local-development harness.
+- Keep `ACME_AUTH_MODE=off` as the consumer default for standalone feature tests.
+  In `local`, gate reads on `issues.read` or `issues.write`, mutations on
+  `issues.write`, and never branch on fixed role names. Require `issues.write`
+  on `POST /api/webhooks/helix`; machine callers use scoped bearer tokens, and
+  outbound tokens are attached only for configured trusted destination origins.
 - Before committing cross-cutting changes, run `npm run verify` (typecheck, test, and build).

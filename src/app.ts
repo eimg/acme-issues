@@ -70,17 +70,37 @@ import {
   updateProject,
 } from "./projects.js";
 import { probeHelixStatus } from "./helixStatus.js";
+import {
+  authenticateRequests,
+  authorizeIssuesRequest,
+  authMode as resolveAuthMode,
+  principalFrom,
+  sameOriginWrites,
+  type PrincipalResolver,
+} from "./auth.js";
+import { identityBaseUrl, type AuthMode } from "acme-identity/client";
 
 export interface CreateAppOptions {
   db: Database.Database;
   dispatcher?: WebhookDispatcher;
   fetchFn?: typeof fetch;
+  identityFetchFn?: typeof fetch;
+  principalResolver?: PrincipalResolver;
+  authMode?: AuthMode;
+  trustedHelixOrigins?: string[];
+  trustedProjectsOrigins?: string[];
 }
 
 export function createApp(opts: CreateAppOptions): Express {
   const { db } = opts;
   const fetchFn = opts.fetchFn ?? fetch;
-  const dispatcher = opts.dispatcher ?? new WebhookDispatcher({ db, fetchFn });
+  const identityFetchFn = opts.identityFetchFn ?? fetch;
+  const authMode = opts.authMode ?? resolveAuthMode();
+  const dispatcher = opts.dispatcher ?? new WebhookDispatcher({
+    db,
+    fetchFn,
+    trustedOrigins: opts.trustedHelixOrigins,
+  });
   const app = express();
 
   const emitProjects = async (
@@ -95,6 +115,7 @@ export function createApp(opts: CreateAppOptions): Express {
       fetchFn,
       externalEventId,
       pullRequestId,
+      trustedOrigins: opts.trustedProjectsOrigins,
     });
   };
 
@@ -201,13 +222,31 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json(pullRequest);
   };
 
+  app.use("/api", (_req, res, next) => {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
+    next();
+  });
   app.use(express.json());
+  app.use("/api", sameOriginWrites());
   app.use(webAssets());
   app.get(["/react", "/react/"], (_req, res) => res.redirect("/"));
 
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true });
+    res.json({ ok: true, service: "acme-issues" });
   });
+  app.get("/api/auth/session", authenticateRequests(opts.principalResolver, authMode), (_req, res) => {
+    res.json({ schemaVersion: "acme.session.v1", authMode, principal: principalFrom(res) });
+  });
+  app.post("/api/auth/session", async (req, res) => {
+    await proxyIdentitySession(identityFetchFn, req, res, "POST");
+  });
+  app.delete("/api/auth/session", async (req, res) => {
+    await proxyIdentitySession(identityFetchFn, req, res, "DELETE");
+  });
+
+  app.use("/api", authenticateRequests(opts.principalResolver, authMode), authorizeIssuesRequest);
 
   app.get("/api/projects", (_req, res) => {
     res.json(listProjects(db));
@@ -1099,6 +1138,33 @@ export function createApp(opts: CreateAppOptions): Express {
   app.get("/", webIndex());
 
   return app;
+}
+
+async function proxyIdentitySession(
+  fetchFn: typeof fetch,
+  req: express.Request,
+  res: express.Response,
+  method: "POST" | "DELETE",
+): Promise<void> {
+  try {
+    const response = await fetchFn(`${identityBaseUrl()}/api/session`, {
+      method,
+      headers: {
+        ...(method === "POST" ? { "content-type": "application/json" } : {}),
+        ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+      },
+      body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
+      signal: AbortSignal.timeout(3_000),
+    });
+    const cookie = response.headers.get("set-cookie");
+    if (cookie) res.setHeader("set-cookie", cookie);
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    res.status(response.status).json(body);
+  } catch (error) {
+    res.status(503).json({
+      error: error instanceof Error ? error.message : "Identity service unavailable",
+    });
+  }
 }
 
 export function startServer(opts: CreateAppOptions & { port: number; host?: string }): void {

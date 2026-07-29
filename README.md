@@ -114,6 +114,12 @@ The UI and API check permission strings rather than role names, so later custom
 roles work without code changes. The built-in `viewer` is read-only, while
 `member`, `operator`, and `admin` can mutate Issues data.
 
+The rightmost account menu keeps identity separate from project navigation. It
+shows the current principal and auth mode, links to the Identity account when
+local auth supplies that URL, and contains sign-out. Because the local suite
+shares a host-only session cookie across ports, signing out invalidates the
+central session for the other Identity-backed apps on the same hostname.
+
 API clients and trusted producers may send an Identity service token as
 `Authorization: Bearer svc_…`. The local Helix callback at
 `POST /api/webhooks/helix` requires `issues.write` like other mutations. In

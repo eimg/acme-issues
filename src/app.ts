@@ -237,7 +237,14 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ ok: true, service: "acme-issues" });
   });
   app.get("/api/auth/session", authenticateRequests(opts.principalResolver, authMode), (_req, res) => {
-    res.json({ schemaVersion: "acme.session.v1", authMode, principal: principalFrom(res) });
+    res.json({
+      schemaVersion: "acme.session.v1",
+      authMode,
+      accountUrl: authMode === "local"
+        ? `${identityBaseUrl().replace(/\/$/, "")}/?tab=account`
+        : undefined,
+      principal: principalFrom(res),
+    });
   });
   app.post("/api/auth/session", async (req, res) => {
     await proxyIdentitySession(identityFetchFn, req, res, "POST");

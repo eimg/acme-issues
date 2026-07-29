@@ -41,6 +41,7 @@ type PullRequestDetailData = PullRequest & {
 type AuthSession = {
   schemaVersion: "acme.session.v1";
   authMode: AuthMode;
+  accountUrl?: string;
   principal: Principal;
 };
 
@@ -52,6 +53,21 @@ type IssuesAuth = {
 };
 
 const IssuesAuthContext = createContext<IssuesAuth | null>(null);
+
+function useOutsideDismissDetails() {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const dismiss = (event: MouseEvent) => {
+      const menu = ref.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
+        menu.open = false;
+      }
+    };
+    document.addEventListener("mousedown", dismiss);
+    return () => document.removeEventListener("mousedown", dismiss);
+  }, []);
+  return ref;
+}
 
 function useIssuesAuth(): IssuesAuth {
   const value = useContext(IssuesAuthContext);
@@ -330,6 +346,7 @@ function Header({
   onNewIssue?: () => void;
 }) {
   const { session, signOut, signingOut } = useIssuesAuth();
+  const accountMenuRef = useOutsideDismissDetails();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -410,19 +427,39 @@ function Header({
             Pull requests
           </button>
         </div>
-        <div className="identity-chip" title={session.principal.permissions.join(", ")}>
-          <strong>{session.principal.displayName}</strong>
-          <span>{session.principal.roles.join(", ") || session.principal.kind}</span>
-        </div>
-        {session.authMode === "local" && (
-          <button className="btn btn-ghost" disabled={signingOut} onClick={signOut}>Sign out</button>
-        )}
         {onSettings && <button className="btn btn-ghost" onClick={onSettings}>
           <Icon name="settings" /> Settings
         </button>}
         {onNewIssue && <button className="btn btn-primary" onClick={onNewIssue}>
           <Icon name="plus" /> New issue
         </button>}
+        <details className="account-menu" ref={accountMenuRef}>
+          <summary className="account-trigger" aria-label={`Account: ${session.principal.displayName}`}>
+            <span className="account-avatar" aria-hidden="true">{session.principal.displayName.charAt(0).toUpperCase()}</span>
+            <span className="account-trigger-name">{session.principal.displayName}</span>
+          </summary>
+          <div className="account-popover">
+            <div className="account-heading">
+              <strong>{session.principal.displayName}</strong>
+              <span>@{session.principal.username}</span>
+            </div>
+            <div className="account-context">
+              <span className={`account-status ${session.authMode === "off" ? "development" : "connected"}`} />
+              <div>
+                <strong>{session.authMode === "off" ? "Authentication off" : "Acme Identity"}</strong>
+                <span>{session.authMode === "off" ? "Development admin access" : session.principal.roles.join(", ") || session.principal.kind}</span>
+              </div>
+            </div>
+            {session.accountUrl && (
+              <a className="account-action" href={session.accountUrl} target="_blank" rel="noreferrer">
+                My identity account <span aria-hidden="true">↗</span>
+              </a>
+            )}
+            {session.authMode === "local" && (
+              <button className="account-action" type="button" disabled={signingOut} onClick={signOut}>Sign out</button>
+            )}
+          </div>
+        </details>
       </div>
     </header>
   );

@@ -2,6 +2,8 @@
 
 Acme Issues is the local issue and pull-request management surface for Helix. It is not the target application Helix should modify during an end-to-end workflow test.
 
+Treat the Acme suite as an executable reference architecture, not a universal platform. Preserve Issues' local operation, focused ownership, and replaceable public seams; add breadth to demonstrate this responsibility, not to anticipate every organization's issue tracker.
+
 ## Related projects
 
 | Project | Local path | Responsibility |

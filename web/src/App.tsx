@@ -26,7 +26,18 @@ import type { AuthMode, Principal } from "acme-identity/types";
 import { api, formatStatus, formatTime, projectApiPath } from "./api";
 
 type View = "issues" | "pull-requests";
-type Screen = "workspace" | "settings" | "new-project";
+type Screen = "workspace" | "settings" | "new-project" | "connections";
+type SteeringIntegrationStatus = {
+  configured: boolean;
+  url: string;
+  source: "stored" | "environment" | "unconfigured";
+  status: "online" | "offline" | "unconfigured";
+  detail: string;
+  checkedAt: string;
+  credentialConfigured: boolean;
+  credentialWillBeSent: boolean;
+  startupConfigured: boolean;
+};
 type IssueDetailData = Issue & { helix?: IssueHelixActivity };
 type PullRequestDetailData = PullRequest & {
   reviews: PullRequestReview[];
@@ -76,7 +87,7 @@ function useIssuesAuth(): IssuesAuth {
 }
 
 function parseScreen(value: string | null): Screen {
-  return value === "settings" || value === "new-project" ? value : "workspace";
+  return value === "settings" || value === "new-project" || value === "connections" ? value : "workspace";
 }
 
 export function App() {
@@ -141,7 +152,7 @@ function AuthenticatedApp() {
     ?? null;
 
   useEffect(() => {
-    if (!canWrite && screen !== "workspace") {
+    if (!canWrite && screen !== "workspace" && screen !== "connections") {
       setScreen("workspace");
     }
   }, [canWrite, screen]);
@@ -182,7 +193,7 @@ function AuthenticatedApp() {
     if (!projects.data?.length) {
       syncAppUrl({
         project: null,
-        screen: screen === "new-project" ? "new-project" : null,
+        screen: screen === "new-project" || screen === "connections" ? screen : null,
         issue: null,
         pr: null,
       });
@@ -215,6 +226,15 @@ function AuthenticatedApp() {
   if (projects.isError) {
     return <p className="query-state react-error">{projects.error.message}</p>;
   }
+  if (screen === "connections") {
+    return (
+      <>
+        <ConnectionsScreen onBack={backToWorkspace} onToast={showToast} />
+        {toast && <div className="toast" role="status">{toast}</div>}
+      </>
+    );
+  }
+
   if (!projects.data?.length) {
     return (
       <>
@@ -228,7 +248,10 @@ function AuthenticatedApp() {
             }}
           />
         ) : (
-          <EmptyProjectsState onCreate={canWrite ? () => setScreen("new-project") : undefined} />
+          <EmptyProjectsState
+            onCreate={canWrite ? () => setScreen("new-project") : undefined}
+            onConnections={() => setScreen("connections")}
+          />
         )}
         {toast && <div className="toast" role="status">{toast}</div>}
       </>
@@ -291,6 +314,7 @@ function AuthenticatedApp() {
         onSelectProject={selectProject}
         onNewProject={canWrite ? () => setScreen("new-project") : undefined}
         onSettings={canWrite ? () => setScreen("settings") : undefined}
+        onConnections={() => setScreen("connections")}
         onNewIssue={canWrite ? () => setDialog("issue") : undefined}
       />
       {view === "issues" ? (
@@ -334,6 +358,7 @@ function Header({
   onSelectProject,
   onNewProject,
   onSettings,
+  onConnections,
   onNewIssue,
 }: {
   view: View;
@@ -343,6 +368,7 @@ function Header({
   onSelectProject: (slug: string) => void;
   onNewProject?: () => void;
   onSettings?: () => void;
+  onConnections?: () => void;
   onNewIssue?: () => void;
 }) {
   const { session, signOut, signingOut } = useIssuesAuth();
@@ -427,6 +453,9 @@ function Header({
             Pull requests
           </button>
         </div>
+        {onConnections && <button className="btn btn-ghost" onClick={onConnections}>
+          Connections
+        </button>}
         {onSettings && <button className="btn btn-ghost" onClick={onSettings}>
           <Icon name="settings" /> Settings
         </button>}
@@ -1630,7 +1659,125 @@ function FormScreen({
   );
 }
 
-function EmptyProjectsState({ onCreate }: { onCreate?: () => void }) {
+function ConnectionsScreen({
+  onBack,
+  onToast,
+}: {
+  onBack: () => void;
+  onToast: (message: string) => void;
+}) {
+  const { canWrite } = useIssuesAuth();
+  const queryClient = useQueryClient();
+  const connection = useQuery({
+    queryKey: ["steering-integration"],
+    queryFn: () => api<SteeringIntegrationStatus>("/api/integrations/steering"),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+  });
+  const [url, setUrl] = useState("");
+
+  useEffect(() => {
+    if (connection.data) setUrl(connection.data.url);
+  }, [connection.data?.url]);
+
+  const save = useMutation({
+    mutationFn: (nextUrl: string | null) => api<SteeringIntegrationStatus>("/api/integrations/steering", {
+      method: "PATCH",
+      body: JSON.stringify({ url: nextUrl }),
+    }),
+    onSuccess: async (result) => {
+      queryClient.setQueryData(["steering-integration"], result);
+      setUrl(result.url);
+      onToast(result.configured ? "Steering connection saved" : "Steering notifications disabled");
+    },
+    onError: (error: Error) => onToast(error.message),
+  });
+
+  const test = useMutation({
+    mutationFn: () => api<SteeringIntegrationStatus>("/api/integrations/steering/test", { method: "POST" }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["steering-integration"], result);
+      onToast(result.status === "online" ? "Steering is online" : result.detail);
+    },
+    onError: (error: Error) => onToast(error.message),
+  });
+
+  const current = connection.data;
+  const changed = current !== undefined && url.trim().replace(/\/$/, "") !== current.url.replace(/\/$/, "");
+
+  return (
+    <FormScreen
+      title="Connections"
+      subtitle="Optional Acme Steering integration for implementation-trigger decisions."
+      onBack={onBack}
+    >
+      <section className="connection-card">
+        <div className="connection-heading">
+          <div>
+            <p className="eyebrow">Workflow steering</p>
+            <h2>
+              Acme Steering
+              <span className={`connection-status ${current?.status ?? "pending"}`}>
+                {connection.isLoading ? "checking" : current?.status ?? "unknown"}
+              </span>
+            </h2>
+            <p className="connection-note">
+              Issues publishes trigger-eligible lifecycle events and receives narrow implementation decisions through this connection.
+            </p>
+          </div>
+        </div>
+        {connection.isError ? (
+          <p className="react-error">{connection.error.message}</p>
+        ) : (
+          <div className="connection-stack">
+            <Field label="Steering URL">
+              <input
+                className="input"
+                value={url}
+                readOnly={!canWrite}
+                placeholder="http://127.0.0.1:8323"
+                onChange={(event) => setUrl(event.target.value)}
+                autoComplete="off"
+              />
+            </Field>
+            <p className="connection-detail">{current?.detail ?? "Checking the connection…"}</p>
+            {current?.source === "environment" && (
+              <p className="hint">Provided by startup configuration. Saving here creates an Issues-local override.</p>
+            )}
+            {current?.credentialConfigured && !current.credentialWillBeSent && current.configured && (
+              <p className="connection-warning">A service credential exists, but it will not be sent until this origin is trusted by the server configuration.</p>
+            )}
+            <p className="hint">Credentials remain server-side and cannot be viewed or changed here.</p>
+            <div className="form-actions">
+              {canWrite && current?.source === "stored" && current.startupConfigured && (
+                <button className="btn btn-ghost" type="button" disabled={save.isPending} onClick={() => save.mutate(null)}>Use startup setting</button>
+              )}
+              {canWrite && current?.configured && (
+                <button className="btn btn-ghost" type="button" disabled={save.isPending} onClick={() => save.mutate("")}>Disable</button>
+              )}
+              <button className="btn" type="button" disabled={!current?.configured || test.isPending} onClick={() => test.mutate()}>
+                {test.isPending ? "Testing…" : "Test connection"}
+              </button>
+              {canWrite && (
+                <button className="btn btn-primary" type="button" disabled={!changed || save.isPending} onClick={() => save.mutate(url)}>
+                  {save.isPending ? "Saving…" : "Save"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+    </FormScreen>
+  );
+}
+
+function EmptyProjectsState({
+  onCreate,
+  onConnections,
+}: {
+  onCreate?: () => void;
+  onConnections?: () => void;
+}) {
   return (
     <main className="empty-projects">
       <div className="empty-state">
@@ -1639,9 +1786,14 @@ function EmptyProjectsState({ onCreate }: { onCreate?: () => void }) {
         <p className="empty-hint">{onCreate
           ? "Create your first project to start tracking issues and local pull requests."
           : "No projects are available. Ask someone with Issues write access to create one."}</p>
-        {onCreate && <button type="button" className="btn btn-primary" onClick={onCreate}>
-          <Icon name="plus" /> Create first project
-        </button>}
+        <div className="empty-actions">
+          {onCreate && <button type="button" className="btn btn-primary" onClick={onCreate}>
+            <Icon name="plus" /> Create first project
+          </button>}
+          {onConnections && <button type="button" className="btn btn-ghost" onClick={onConnections}>
+            Connections
+          </button>}
+        </div>
       </div>
     </main>
   );
@@ -1919,7 +2071,7 @@ function positiveNumber(value: string | null): number | null {
 
 function syncAppUrl(params: {
   project: string | null;
-  screen: "settings" | "new-project" | null;
+  screen: "settings" | "new-project" | "connections" | null;
   issue: number | null;
   pr: number | null;
 }) {

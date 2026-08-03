@@ -80,9 +80,20 @@ import {
 } from "./auth.js";
 import { identityBaseUrl, type AuthMode } from "acme-identity/client";
 import {
-  createSteeringNotifier, ensureSteeringDecisionStore, listSteeringDecisions,
-  parseSteeringActionRequest, parseSteeringDecisionNotice, recordSteeringDecision,
-  type SteeringActionReceipt, type SteeringNotification,
+  clearSteeringUrl,
+  createSteeringNotifier,
+  ensureSteeringDecisionStore,
+  listSteeringDecisions,
+  parseSteeringActionRequest,
+  parseSteeringDecisionNotice,
+  probeSteeringIntegration,
+  recordSteeringDecision,
+  resolveSteeringConfig,
+  setSteeringUrl,
+  steeringEnvironmentFromProcess,
+  type SteeringActionReceipt,
+  type SteeringEnvironmentConfig,
+  type SteeringNotification,
 } from "./steering.js";
 
 export interface CreateAppOptions {
@@ -94,6 +105,7 @@ export interface CreateAppOptions {
   authMode?: AuthMode;
   trustedHelixOrigins?: string[];
   trustedProjectsOrigins?: string[];
+  steeringEnvironment?: SteeringEnvironmentConfig;
 }
 
 export function createApp(opts: CreateAppOptions): Express {
@@ -102,12 +114,13 @@ export function createApp(opts: CreateAppOptions): Express {
   const fetchFn = opts.fetchFn ?? fetch;
   const identityFetchFn = opts.identityFetchFn ?? fetch;
   const authMode = opts.authMode ?? resolveAuthMode();
+  const steeringEnvironment = opts.steeringEnvironment ?? steeringEnvironmentFromProcess();
   const dispatcher = opts.dispatcher ?? new WebhookDispatcher({
     db,
     fetchFn,
     trustedOrigins: opts.trustedHelixOrigins,
   });
-  const notifySteering = createSteeringNotifier(fetchFn);
+  const notifySteering = createSteeringNotifier(fetchFn, () => resolveSteeringConfig(db, steeringEnvironment));
   const app = express();
 
   const emitProjects = async (
@@ -265,6 +278,24 @@ export function createApp(opts: CreateAppOptions): Express {
   });
 
   app.use("/api", authenticateRequests(opts.principalResolver, authMode), authorizeIssuesRequest);
+  app.get("/api/integrations/steering", async (_req, res) => {
+    res.json(await probeSteeringIntegration(db, fetchFn, steeringEnvironment));
+  });
+  app.patch("/api/integrations/steering", async (req, res) => {
+    if (req.body?.url !== null && typeof req.body?.url !== "string") {
+      return res.status(400).json({ error: "url must be a string or null" });
+    }
+    try {
+      if (req.body.url === null) clearSteeringUrl(db);
+      else setSteeringUrl(db, req.body.url);
+      return res.json(await probeSteeringIntegration(db, fetchFn, steeringEnvironment));
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.post("/api/integrations/steering/test", async (_req, res) => {
+    res.json(await probeSteeringIntegration(db, fetchFn, steeringEnvironment));
+  });
   app.post("/api/steering/actions", async (req, res) => {
     const action = parseSteeringActionRequest(req.body);
     if (!action) return res.status(400).json({ error: "Invalid acme.steering.action.v1 payload" });

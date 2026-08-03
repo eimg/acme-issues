@@ -39,6 +39,12 @@ describe("acme-issues API", () => {
         projectsLifecycleCalls.push({ url: href, body });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
+      if (href.includes("steering.test/api/health")) {
+        return Response.json({ ok: true, product: "acme-steering" });
+      }
+      if (href.includes("steering.test/api/notifications/check")) {
+        return Response.json({ ok: true, product: "acme-issues" });
+      }
       webhookCalls.push({ url: href, body });
       if (href.includes("/continuations")) {
         return new Response(
@@ -64,6 +70,33 @@ describe("acme-issues API", () => {
   after(() => {
     db.close();
     rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("manages and tests the optional Steering connection without storing credentials", async () => {
+    const saved = await request(app)
+      .patch("/api/integrations/steering")
+      .send({ url: "http://steering.test/" })
+      .expect(200);
+    assert.equal(saved.body.url, "http://steering.test");
+    assert.equal(saved.body.source, "stored");
+    assert.equal(saved.body.status, "online");
+
+    const tested = await request(app).post("/api/integrations/steering/test").expect(200);
+    assert.equal(tested.body.status, "online");
+    assert.equal(Object.hasOwn(tested.body, "token"), false);
+
+    const disabled = await request(app)
+      .patch("/api/integrations/steering")
+      .send({ url: "" })
+      .expect(200);
+    assert.equal(disabled.body.configured, false);
+    assert.equal(disabled.body.source, "stored");
+
+    const reset = await request(app)
+      .patch("/api/integrations/steering")
+      .send({ url: null })
+      .expect(200);
+    assert.equal(reset.body.source, "unconfigured");
   });
 
   it("manages projects and isolates nested resources", async () => {

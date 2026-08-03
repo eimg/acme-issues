@@ -48,4 +48,7 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
 - Require `issues.steering.receive` on the Steering decision endpoint. Record the
   decision durably and append one system comment without mutating issue or PR state;
   Issues owns any later response.
+- Issues owns the non-secret Steering URL shown under **Connections**. A saved
+  value overrides `ACME_STEERING_URL`; clearing the override returns to startup
+  configuration. Tokens remain server-side and may be sent only to trusted origins.
 - Before committing cross-cutting changes, run `npm run verify` (typecheck, test, and build).

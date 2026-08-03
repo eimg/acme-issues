@@ -132,6 +132,13 @@ function migrate(db: Database.Database): void {
   migrateHelixRunsTrigger(db);
   migrateMultiProject(db);
   migrateProjectsHandoff(db);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
 }
 
 /** Existing DBs may still CHECK only open|closed; recreate table if needed. */

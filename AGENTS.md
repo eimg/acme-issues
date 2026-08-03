@@ -14,11 +14,12 @@ Treat the Acme suite as an executable reference architecture, not a universal pl
 | Helix | `~/Desktop/acme/helix` | Agent workflow control plane that receives work and orchestrates changes. |
 | Acme Issues | `~/Desktop/acme/acme-issues` | Local issue and PR management surface that triggers Helix and receives callbacks. |
 | Acme Projects | `~/Desktop/acme/acme-projects` | Standalone feature-idea and collaboration board for existing Helix repos; can manually create non-triggering issues here. |
+| Acme Steering | `~/Desktop/acme/acme-steering` | Optional decision inbox and delegation-policy coordinator; may invoke only Issues' narrow implementation-trigger action. |
 | Acme Todo | `~/Desktop/acme/acme-todo` | Disposable target application used for agent implementation and verification. |
 
 Existing-repo flow: Acme issue → Helix implementation → Acme local PR → Helix independent PR review → human merge record. Primer shares the fictional Acme context but is not in that runtime path.
 
-Manual feature handoff: Acme Projects ready card → linked issue labeled `acme-projects`; a human adds the configured trigger label here to start Helix. Automatic trigger and card lifecycle callbacks remain planned. Acme Projects will not call Helix directly; see [`docs/workflow-model.md`](./docs/workflow-model.md).
+Default feature handoff: Acme Projects ready card → linked issue labeled `acme-projects`; a human adds the configured trigger label here to start Helix. Issues now projects accepted-run, PR, and completion callbacks back to Projects. Optional Steering can request the same narrow trigger through Issues' public action contract, but the current reference policy keeps that action human-authorized. Acme Projects never calls Helix directly; see [`docs/workflow-model.md`](./docs/workflow-model.md).
 
 New-project inception belongs to Prelude. Prelude does not create issues or call Helix today; Helix consumes its exported artifacts via empty-workspace bootstrap.
 

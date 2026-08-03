@@ -18,16 +18,19 @@ Acme Issues is one of the related projects. They remain separate products with s
 | **[Helix](https://github.com/eimg/helix)** | Agent workflow control plane that receives work and orchestrates changes. |
 | **[Acme Issues](https://github.com/eimg/acme-issues)** | Local issue and PR management surface that triggers Helix and receives callbacks. |
 | **[Acme Projects](https://github.com/eimg/acme-projects)** | Standalone feature-idea and collaboration board for existing Helix repos; can manually create non-triggering issues here. |
+| **[Acme Steering](https://github.com/eimg/acme-steering)** | Optional decision inbox and delegation policy; can invoke only Issues' narrow implementation-trigger contract. |
 | **[Acme Todo](https://github.com/eimg/acme-todo)** | Disposable target application used for agent implementation and verification. |
 
 Existing-repo exercise: Acme Issues sends a work item to Helix, which works on Acme Todo. Primer develops the separate knowledge side of the same fictional Acme context.
 
-Current manual feature handoff: a ready Acme Projects card can create a thin
+Default feature handoff: a ready Acme Projects card can create a thin
 linked issue here with the `acme-projects` label via the nested project issues
 API (`POST /api/projects/:ref/issues`). It does not include `trigger`;
 a human adds the configured trigger label to start the existing Acme Issues →
-Helix flow. Automatic triggering and project-card lifecycle callbacks remain
-planned. Acme Projects will not call Helix directly; see
+Helix flow. Issues projects accepted-run, PR, and completion lifecycle callbacks
+back to the linked Projects card. Optional Steering may request the same trigger
+through Issues' public action contract; the shipped reference policy still
+requires a human for this action. Acme Projects will not call Helix directly; see
 [`docs/workflow-model.md`](./docs/workflow-model.md).
 
 New-project inception belongs to Prelude, which exports bootstrap artifacts for
@@ -357,6 +360,8 @@ Pull-request status values: `draft`, `reviewing`, `changes_requested`, `blocked`
 ## Optional Steering notifications
 
 Set `ACME_STEERING_URL` to publish issue, Helix-run, and pull-request lifecycle transitions to Acme Steering. In shared local-auth mode, set a scoped `ACME_STEERING_TOKEN` with `steering.notify.issues`. Delivery is best-effort after Issues commits its authoritative state. A trigger-eligible issue can open an implementation decision projection; a manual trigger or later lifecycle callback reconciles it. Merge remains a human action owned by Acme Issues.
+
+The shipped reference policy classifies this implementation trigger as human-required. The mechanical contract is present so an organization may later delegate it deliberately without changing Issues' validation or the Projects → Issues → Helix boundary.
 
 Issues accepts `issues.trigger_implementation` at `POST /api/steering/actions`. The caller needs the action-specific `issues.steering.trigger` permission; Issues reloads the issue, validates the expected revision, delivers through its configured Helix adapter, and records `in_progress` only after Helix accepts the trigger. Merge is intentionally not exposed through this contract.
 

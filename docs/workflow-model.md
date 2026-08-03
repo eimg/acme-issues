@@ -51,17 +51,18 @@ card, but the identity model does not equate a card with an issue.
 
 ## Trigger and state semantics
 
-`Ready` is an eligibility and handoff boundary in Acme Projects. The current
+`Ready` is an eligibility and handoff boundary in Acme Projects. The default
 integration is manual: the user selects **Submit as issue** on a ready card.
 Acme Projects creates the issue through the Acme Issues nested project API with
 `acme-projects`, but without the configured trigger label. A human adds that
-label here when ready. The card will move to `In progress` only after Helix
-accepts a run; that callback projection is not implemented yet.
+label here when ready. Optional Acme Steering may request the same trigger through
+`issues.trigger_implementation`; the current reference policy keeps it human-required.
+The card moves to `In progress` only after Helix accepts a run, then Issues projects
+PR registration and completion back to `In review` and `Done`.
 
-A later project-level policy may automatically request implementation when a
-card enters `Ready`. Failed issue creation or run submission leaves the card
-`Ready` and requires an explicit retry; automatic behavior must not create a
-retry loop.
+A later organization-specific Steering policy may automatically authorize the
+trigger. Failed issue creation or run submission leaves the card `Ready` and
+requires an explicit retry; automatic behavior must not create a retry loop.
 
 The intended state projection is:
 

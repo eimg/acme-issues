@@ -79,6 +79,7 @@ import {
   type PrincipalResolver,
 } from "./auth.js";
 import { identityBaseUrl, type AuthMode } from "acme-identity/client";
+import { createSteeringNotifier, parseSteeringActionRequest, type SteeringActionReceipt, type SteeringNotification } from "./steering.js";
 
 export interface CreateAppOptions {
   db: Database.Database;
@@ -101,6 +102,7 @@ export function createApp(opts: CreateAppOptions): Express {
     fetchFn,
     trustedOrigins: opts.trustedHelixOrigins,
   });
+  const notifySteering = createSteeringNotifier(fetchFn);
   const app = express();
 
   const emitProjects = async (
@@ -179,6 +181,7 @@ export function createApp(opts: CreateAppOptions): Express {
         pullRequest.id,
       );
     }
+    notifySteering(pullRequestNotification(pullRequest, "pull_request.registered", "Pull request registered"));
     res.status(201).json(pullRequest);
   };
 
@@ -219,6 +222,9 @@ export function createApp(opts: CreateAppOptions): Express {
         id,
       );
     }
+    if (pullRequest && pullRequest.status !== existing.status) {
+      notifySteering(pullRequestNotification(pullRequest, `pull_request.${pullRequest.status}`, `Pull request marked ${pullRequest.status.replaceAll("_", " ")}`));
+    }
     res.json(pullRequest);
   };
 
@@ -254,6 +260,44 @@ export function createApp(opts: CreateAppOptions): Express {
   });
 
   app.use("/api", authenticateRequests(opts.principalResolver, authMode), authorizeIssuesRequest);
+  app.post("/api/steering/actions", async (req, res) => {
+    const action = parseSteeringActionRequest(req.body);
+    if (!action) return res.status(400).json({ error: "Invalid acme.steering.action.v1 payload" });
+    if (action.actionKey !== "issues.trigger_implementation" || action.resource.type !== "issue") {
+      return res.status(400).json(actionReceipt(action.requestId, "rejected", action.resource.expectedRevision, "Unsupported Issues steering action."));
+    }
+    const resolved = getIssueById(db, Number(action.resource.id));
+    if (!resolved) return res.status(404).json(actionReceipt(action.requestId, "rejected", action.resource.expectedRevision, "Issue not found."));
+    const { issue } = resolved;
+    const active = activeHelixRun(db, issue.id);
+    if (issue.status === "in_progress" || active) {
+      return res.json(actionReceipt(action.requestId, "already_applied", String(issue.updatedAt), "The issue already has active implementation work."));
+    }
+    if (String(issue.updatedAt) !== action.resource.expectedRevision) {
+      return res.status(409).json(actionReceipt(action.requestId, "stale", String(issue.updatedAt), "The issue changed before the action was applied."));
+    }
+    if (issue.status !== "open") {
+      return res.status(409).json(actionReceipt(action.requestId, "rejected", String(issue.updatedAt), "Only an open issue can trigger implementation."));
+    }
+    const delivery = await dispatcher.dispatchForIssue(issue, `steering:${action.requestId}`);
+    if (!delivery?.success) {
+      return res.status(502).json(actionReceipt(
+        action.requestId, "unavailable", String(issue.updatedAt), delivery?.error ?? "The configured Helix destination did not accept the action.",
+      ));
+    }
+    const started = updateIssue(db, resolved.project, issue.id, { status: "in_progress" }) ?? issue;
+    await emitProjects(
+      started,
+      resolved.project,
+      "implementation.started",
+      `issue:${issue.id}:steering:${action.requestId}`,
+    );
+    notifySteering(issueNotification(started, "issue.implementation_triggered", "Issue sent to Helix by Steering", "resolved"));
+    return res.json({
+      ...actionReceipt(action.requestId, "applied", String(started.updatedAt), "Acme Issues delivered the implementation trigger to Helix."),
+      operationId: String(delivery.id),
+    });
+  });
 
   app.get("/api/projects", (_req, res) => {
     res.json(listProjects(db));
@@ -536,6 +580,13 @@ export function createApp(opts: CreateAppOptions): Express {
       delivery = await dispatcher.dispatchForIssue(issue, "issue.created");
     }
 
+    notifySteering(issueNotification(
+      issue,
+      delivery ? "issue.implementation_triggered" : "issue.created",
+      delivery ? "Issue sent to Helix" : "Issue created",
+      issueMatchesFilter(issue, config.labelFilter) ? (delivery ? "resolved" : "open") : undefined,
+    ));
+
     res.status(201).json({ issue, delivery });
   });
 
@@ -613,6 +664,13 @@ export function createApp(opts: CreateAppOptions): Express {
       }
     }
 
+    notifySteering(issueNotification(
+      issue,
+      `issue.${issue.status}`,
+      `Issue marked ${issue.status.replaceAll("_", " ")}`,
+      delivery ? "resolved" : issue.status === "open" && issueMatchesFilter(issue, config.labelFilter) ? "open" : "superseded",
+    ));
+
     res.json({ issue, delivery });
   });
 
@@ -638,6 +696,7 @@ export function createApp(opts: CreateAppOptions): Express {
     }
 
     const delivery = await dispatcher.dispatchForIssue(issue, "manual");
+    notifySteering(issueNotification(issue, "issue.implementation_triggered", "Issue manually sent to Helix", "resolved"));
     res.json({ issue, delivery });
   });
 
@@ -1104,6 +1163,7 @@ export function createApp(opts: CreateAppOptions): Express {
         "implementation.started",
         `issue:${issueId}:run:${payload.run.id}:started`,
       );
+      if (issue) notifySteering(issueNotification(issue, "issue.run_started", "Helix implementation started", "resolved"));
       res.status(200).json({ ok: true, issue, comment });
       return;
     }
@@ -1139,12 +1199,58 @@ export function createApp(opts: CreateAppOptions): Express {
       "implementation.completed",
       `issue:${issueId}:run:${payload.run.id}:completed`,
     );
+    if (issue) notifySteering(issueNotification(issue, "issue.run_completed", "Helix implementation completed"));
     res.status(200).json({ ok: true, issue, comment });
   });
 
   app.get("/", webIndex());
 
   return app;
+}
+
+function issueNotification(
+  issue: Issue,
+  type: string,
+  summary: string,
+  state?: "open" | "resolved" | "withdrawn" | "superseded",
+): SteeringNotification {
+  return {
+    schemaVersion: "acme.steering.notification.v1",
+    id: `acme-issues:issue:${issue.id}:${type}:${issue.updatedAt}`,
+    source: { product: "acme-issues", resourceType: "issue", resourceId: String(issue.id), revision: String(issue.updatedAt), url: issue.url },
+    event: { type, occurredAt: new Date(issue.updatedAt).toISOString(), summary, detail: issue.title },
+    ...(state ? { steering: {
+      caseKey: `issue:${issue.id}:trigger`, state,
+      title: `Start implementation for ${issue.title}`,
+      action: "issues.trigger_implementation",
+      reason: "The issue matches the project's implementation trigger policy.",
+      proposedAction: "Dispatch the issue to the configured Helix workflow.",
+      recommendation: "Trigger after checking the issue is concrete and ready for implementation.",
+      reversible: true, facts: { open: issue.status === "open" },
+    } } : {}),
+  };
+}
+
+function pullRequestNotification(
+  pullRequest: import("./types.js").PullRequest,
+  type: string,
+  summary: string,
+): SteeringNotification {
+  return {
+    schemaVersion: "acme.steering.notification.v1",
+    id: `acme-issues:pull-request:${pullRequest.id}:${type}:${pullRequest.updatedAt}`,
+    source: { product: "acme-issues", resourceType: "pull-request", resourceId: String(pullRequest.id), revision: String(pullRequest.updatedAt) },
+    event: { type, occurredAt: new Date(pullRequest.updatedAt).toISOString(), summary, detail: pullRequest.title },
+  };
+}
+
+function actionReceipt(
+  requestId: string,
+  status: SteeringActionReceipt["status"],
+  sourceRevision: string,
+  summary: string,
+): SteeringActionReceipt {
+  return { schemaVersion: "acme.steering.action-receipt.v1", requestId, status, sourceRevision, summary };
 }
 
 async function proxyIdentitySession(

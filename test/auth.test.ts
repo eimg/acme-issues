@@ -21,6 +21,7 @@ describe("Acme Issues identity permissions", () => {
     member: ["issues.write"],
     custom: ["issues.*"],
     unrelated: ["projects.write"],
+    steering: ["issues.steering.trigger"],
   };
   const principalResolver = async (options: ResolveOptions): Promise<Principal> => {
     const username = options.devUser ?? "admin";
@@ -116,6 +117,16 @@ describe("Acme Issues identity permissions", () => {
       .set(HEADER, "member")
       .send({ event: "unknown.event" })
       .expect(200, { ok: true, ignored: true, event: "unknown.event" });
+  });
+
+  it("keeps the Steering trigger credential narrower than ordinary issue writes", async () => {
+    const action = {
+      schemaVersion: "acme.steering.action.v1", requestId: "auth-test", caseId: "case", decisionId: "decision",
+      actionKey: "issues.trigger_implementation", resource: { type: "issue", id: "9999", expectedRevision: "1" },
+    };
+    await request(app).post("/api/steering/actions").set(HEADER, "member").send(action).expect(403);
+    await request(app).post("/api/steering/actions").set(HEADER, "steering").send(action).expect(404);
+    await request(app).post("/api/projects/permission-test/issues").set(HEADER, "steering").send({ title: "No broad write" }).expect(403);
   });
 
   it("does not send the Helix token to an untrusted project webhook", async () => {

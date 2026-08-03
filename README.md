@@ -354,6 +354,12 @@ Issue status values: `open`, `in_progress`, `closed`.
 
 Pull-request status values: `draft`, `reviewing`, `changes_requested`, `blocked`, `ready_to_merge`, `merged`, `closed`.
 
+## Optional Steering notifications
+
+Set `ACME_STEERING_URL` to publish issue, Helix-run, and pull-request lifecycle transitions to Acme Steering. In shared local-auth mode, set a scoped `ACME_STEERING_TOKEN` with `steering.notify.issues`. Delivery is best-effort after Issues commits its authoritative state. A trigger-eligible issue can open an implementation decision projection; a manual trigger or later lifecycle callback reconciles it. Merge remains a human action owned by Acme Issues.
+
+Issues accepts `issues.trigger_implementation` at `POST /api/steering/actions`. The caller needs the action-specific `issues.steering.trigger` permission; Issues reloads the issue, validates the expected revision, delivers through its configured Helix adapter, and records `in_progress` only after Helix accepts the trigger. Merge is intentionally not exposed through this contract.
+
 ## Development
 
 The web interface is served at `/`.

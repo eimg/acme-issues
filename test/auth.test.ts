@@ -22,6 +22,7 @@ describe("Acme Issues identity permissions", () => {
     custom: ["issues.*"],
     unrelated: ["projects.write"],
     steering: ["issues.steering.trigger"],
+    receiver: ["issues.steering.receive"],
   };
   const principalResolver = async (options: ResolveOptions): Promise<Principal> => {
     const username = options.devUser ?? "admin";
@@ -127,6 +128,9 @@ describe("Acme Issues identity permissions", () => {
     await request(app).post("/api/steering/actions").set(HEADER, "member").send(action).expect(403);
     await request(app).post("/api/steering/actions").set(HEADER, "steering").send(action).expect(404);
     await request(app).post("/api/projects/permission-test/issues").set(HEADER, "steering").send({ title: "No broad write" }).expect(403);
+    await request(app).post("/api/steering/decisions").set(HEADER, "steering").send({}).expect(403);
+    await request(app).post("/api/steering/decisions").set(HEADER, "receiver").send({}).expect(400);
+    await request(app).post("/api/steering/actions").set(HEADER, "receiver").send(action).expect(403);
   });
 
   it("does not send the Helix token to an untrusted project webhook", async () => {

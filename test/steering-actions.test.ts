@@ -6,7 +6,7 @@ import { after, before, it } from "node:test";
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { openDatabase } from "../src/db.js";
-import { createIssue } from "../src/issues.js";
+import { createIssue, getIssueById } from "../src/issues.js";
 import { createProject } from "../src/projects.js";
 import { WebhookDispatcher } from "../src/webhooks.js";
 
@@ -30,3 +30,29 @@ it("applies and deduplicates the implementation-trigger action", async () => {
   const duplicate = await request(app).post("/api/steering/actions").send(body).expect(200);
   assert.equal(duplicate.body.status, "already_applied");
 });
+
+it("records a Steering disposition while Issues retains workflow ownership", async () => {
+  const project = createProject(db, { title: "Decision project", slug: "decision-project" });
+  const issue = createIssue(db, project, { title: "Revise me", status: "open" });
+  const app = createApp({ db });
+  const body = decisionBody("issues.trigger_implementation", "issue", String(issue.id), String(issue.updatedAt));
+  await request(app).post("/api/steering/decisions").send(body).expect(202).expect(({ body: receipt }) => assert.equal(receipt.status, "recorded"));
+  await request(app).post("/api/steering/decisions").send(body).expect(200).expect(({ body: receipt }) => assert.equal(receipt.status, "already_recorded"));
+  const listed = await request(app).get(`/api/steering/decisions?resourceType=issue&resourceId=${issue.id}`).expect(200);
+  assert.equal(listed.body.items[0].resolution, "request_revision");
+  assert.equal(getIssueById(db, issue.id)?.issue.status, "open");
+  const comments = await request(app).get(`/api/projects/${project.slug}/issues/${issue.id}/comments`).expect(200);
+  assert.equal(comments.body.length, 1);
+  assert.match(comments.body[0].body, /Steering decision: request revision/);
+  assert.match(comments.body[0].body, /Clarify the implementation boundary/);
+});
+
+function decisionBody(actionKey: string, type: string, id: string, expectedRevision: string) {
+  return {
+    schemaVersion: "acme.steering.decision.v1", decisionId: `decision-${id}`, caseId: `case-${id}`,
+    actionKey, resolution: "request_revision", rationale: "Clarify the implementation boundary.",
+    decidedAt: "2026-08-03T00:00:00.000Z",
+    actor: { id: "identity:admin", issuer: "acme-identity", username: "admin", displayName: "Administrator", kind: "human" },
+    resource: { type, id, expectedRevision },
+  };
+}

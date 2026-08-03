@@ -79,7 +79,11 @@ import {
   type PrincipalResolver,
 } from "./auth.js";
 import { identityBaseUrl, type AuthMode } from "acme-identity/client";
-import { createSteeringNotifier, parseSteeringActionRequest, type SteeringActionReceipt, type SteeringNotification } from "./steering.js";
+import {
+  createSteeringNotifier, ensureSteeringDecisionStore, listSteeringDecisions,
+  parseSteeringActionRequest, parseSteeringDecisionNotice, recordSteeringDecision,
+  type SteeringActionReceipt, type SteeringNotification,
+} from "./steering.js";
 
 export interface CreateAppOptions {
   db: Database.Database;
@@ -94,6 +98,7 @@ export interface CreateAppOptions {
 
 export function createApp(opts: CreateAppOptions): Express {
   const { db } = opts;
+  ensureSteeringDecisionStore(db);
   const fetchFn = opts.fetchFn ?? fetch;
   const identityFetchFn = opts.identityFetchFn ?? fetch;
   const authMode = opts.authMode ?? resolveAuthMode();
@@ -297,6 +302,33 @@ export function createApp(opts: CreateAppOptions): Express {
       ...actionReceipt(action.requestId, "applied", String(started.updatedAt), "Acme Issues delivered the implementation trigger to Helix."),
       operationId: String(delivery.id),
     });
+  });
+  app.post("/api/steering/decisions", (req, res) => {
+    const notice = parseSteeringDecisionNotice(req.body);
+    if (!notice) return res.status(400).json({ error: "Invalid acme.steering.decision.v1 payload" });
+    if (notice.actionKey !== "issues.trigger_implementation" || notice.resource.type !== "issue") {
+      return res.status(400).json({ error: "Unsupported Issues Steering decision" });
+    }
+    const resolved = getIssueById(db, Number(notice.resource.id));
+    if (!resolved) return res.status(404).json({ error: "Issue not found" });
+    const receipt = db.transaction(() => {
+      const recorded = recordSteeringDecision(db, notice, String(resolved.issue.updatedAt));
+      if (recorded.status === "recorded" || recorded.status === "stale") {
+        createComment(db, resolved.issue.id, {
+          author: "Acme Steering",
+          source: "system",
+          body: steeringDecisionComment(notice, recorded.status),
+        });
+      }
+      return recorded;
+    })();
+    return res.status(receipt.status === "recorded" ? 202 : receipt.status === "already_recorded" ? 200 : 409).json(receipt);
+  });
+  app.get("/api/steering/decisions", (req, res) => {
+    const resourceType = typeof req.query.resourceType === "string" ? req.query.resourceType.trim() : "";
+    const resourceId = typeof req.query.resourceId === "string" ? req.query.resourceId.trim() : "";
+    if (!resourceType || !resourceId) return res.status(400).json({ error: "resourceType and resourceId are required" });
+    return res.json({ items: listSteeringDecisions(db, resourceType, resourceId) });
   });
 
   app.get("/api/projects", (_req, res) => {
@@ -1251,6 +1283,19 @@ function actionReceipt(
   summary: string,
 ): SteeringActionReceipt {
   return { schemaVersion: "acme.steering.action-receipt.v1", requestId, status, sourceRevision, summary };
+}
+
+function steeringDecisionComment(
+  notice: import("./steering.js").SteeringDecisionNotice,
+  status: "recorded" | "stale",
+): string {
+  const resolution = notice.resolution.replaceAll("_", " ");
+  return [
+    `Steering decision: ${resolution}${status === "stale" ? " (received after the issue changed)" : ""}.`,
+    notice.rationale ? `Rationale: ${notice.rationale}` : undefined,
+    `Decided by ${notice.actor.displayName}. Decision ${notice.decisionId}.`,
+    "Acme Issues retains ownership of the next workflow transition.",
+  ].filter(Boolean).join("\n\n");
 }
 
 async function proxyIdentitySession(

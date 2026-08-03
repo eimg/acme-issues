@@ -360,6 +360,8 @@ Set `ACME_STEERING_URL` to publish issue, Helix-run, and pull-request lifecycle 
 
 Issues accepts `issues.trigger_implementation` at `POST /api/steering/actions`. The caller needs the action-specific `issues.steering.trigger` permission; Issues reloads the issue, validates the expected revision, delivers through its configured Helix adapter, and records `in_progress` only after Helix accepts the trigger. Merge is intentionally not exposed through this contract.
 
+Every Steering disposition is independently accepted at `POST /api/steering/decisions` with `issues.steering.receive`, recorded in Issues' durable decision ledger, and appended once as a system comment on the issue. The ledger is also queryable at `GET /api/steering/decisions`. Receipt does not change issue, delivery, run, or pull-request state. Issues owns the deterministic response to reject, request revision, defer, or escalation; approval may separately invoke the narrow trigger action above.
+
 ## Development
 
 The web interface is served at `/`.

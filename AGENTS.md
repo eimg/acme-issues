@@ -44,4 +44,7 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
   on `POST /api/webhooks/helix` and `issues.steering.trigger` only on the narrow
   Steering action endpoint; machine callers use scoped bearer tokens, and
   outbound tokens are attached only for configured trusted destination origins.
+- Require `issues.steering.receive` on the Steering decision endpoint. Record the
+  decision durably and append one system comment without mutating issue or PR state;
+  Issues owns any later response.
 - Before committing cross-cutting changes, run `npm run verify` (typecheck, test, and build).

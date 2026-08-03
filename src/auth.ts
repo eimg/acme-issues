@@ -66,6 +66,14 @@ export function authorizeIssuesRequest(req: Request, res: Response, next: NextFu
     res.status(403).json({ error: "Missing permission: issues.steering.trigger" });
     return;
   }
+  if (req.method === "POST" && req.path === "/steering/decisions") {
+    if (hasPermission(principal, "issues.steering.receive")) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "Missing permission: issues.steering.receive" });
+    return;
+  }
 
   if (!hasPermission(principal, "issues.write")) {
     res.status(403).json({ error: "Missing permission: issues.write" });

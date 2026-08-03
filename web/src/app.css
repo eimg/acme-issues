@@ -457,6 +457,15 @@ body {
   text-overflow: ellipsis;
 }
 
+button.helix-target-status {
+  font: inherit;
+  cursor: pointer;
+}
+
+button.helix-target-status:hover {
+  border-color: #c9cbc5;
+}
+
 .helix-target-status.online {
   color: #166534;
   border-color: #bbf7d0;
@@ -1808,6 +1817,12 @@ textarea.input {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.connections-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .connection-card {

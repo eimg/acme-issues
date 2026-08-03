@@ -95,9 +95,11 @@ npm run dev
 # → http://127.0.0.1:8320/
 ```
 
-Open the project title in the header to select or create a project, then open
-**Settings** for that project’s webhook URL, callback URL, and label filter.
-Create issues from the UI or nested project API.
+Open the project title in the header to select or create a project. Use
+**Settings** for that project’s identity and local workflow behavior (title,
+slug, callback URL, label filter, continuation command). Use **Connections**
+for sibling links: per-project Helix webhook destination and the instance-wide
+Acme Steering URL. Create issues from the UI or nested project API.
 
 ### Authentication and permissions
 
@@ -345,13 +347,20 @@ Helix sends `pr.review.started` and `pr.review.completed` to the same callback e
 | `DELETE` | `/api/projects/:projectRef/webhooks/deliveries/:id` | Remove one delivery log |
 | `DELETE` | `/api/projects/:projectRef/webhooks/deliveries` | Clear project delivery logs |
 | `POST` | `/api/webhooks/helix` | Inbound Helix callbacks (resolves project via issue/PR id) |
+| `GET` | `/api/integrations/steering` | Probe optional Acme Steering connection |
+| `PATCH` | `/api/integrations/steering` | Set, clear, or restore the non-secret Steering URL |
+| `POST` | `/api/integrations/steering/test` | Re-probe Steering reachability and notification credential |
+| `GET` | `/api/steering/decisions` | List recorded Steering dispositions |
+| `POST` | `/api/steering/actions` | Accept a narrow Steering action (`issues.trigger_implementation`) |
+| `POST` | `/api/steering/decisions` | Record a Steering disposition notice |
 
 `GET /api/projects/:projectRef/issues` returns `{ items, total, limit, offset }` (default `limit` 25).
 
 Deep links use `?project=<slug>&issue=<id>` or `?pr=<id>` (Helix’s flat PR
 link; Issues resolves the owning project). Nested `?project=<slug>&pr=<id>`
-still works. Project settings and new-project use `?project=<slug>&screen=settings`
-and `?screen=new-project`.
+still works. Project settings, Connections, and new-project use
+`?project=<slug>&screen=settings`, `?project=<slug>&screen=connections`, and
+`?screen=new-project`.
 
 Issue status values: `open`, `in_progress`, `closed`.
 
@@ -359,7 +368,7 @@ Pull-request status values: `draft`, `reviewing`, `changes_requested`, `blocked`
 
 ## Optional Steering notifications
 
-Set `ACME_STEERING_URL` to publish issue, Helix-run, and pull-request lifecycle transitions to Acme Steering. In shared local-auth mode, set a scoped `ACME_STEERING_TOKEN` with `steering.notify.issues`. Delivery is best-effort after Issues commits its authoritative state. A trigger-eligible issue can open an implementation decision projection; a manual trigger or later lifecycle callback reconciles it. Merge remains a human action owned by Acme Issues.
+Set `ACME_STEERING_URL` (or configure the same non-secret URL under **Connections → Acme Steering**) to publish issue, Helix-run, and pull-request lifecycle transitions to Acme Steering. A saved Connections value overrides the startup environment; clearing it returns to startup configuration or disables notifications. In shared local-auth mode, set a scoped `ACME_STEERING_TOKEN` with `steering.notify.issues`. Credentials remain server-side. Delivery is best-effort after Issues commits its authoritative state. A trigger-eligible issue can open an implementation decision projection; a manual trigger or later lifecycle callback reconciles it. Merge remains a human action owned by Acme Issues.
 
 The shipped reference policy classifies this implementation trigger as human-required. The mechanical contract is present so an organization may later delegate it deliberately without changing Issues' validation or the Projects → Issues → Helix boundary.
 

@@ -26,7 +26,7 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
 ## Working rules
 
 - Preserve SQLite issue, comment, delivery, Helix-run lineage, local PR, and review-revision behavior.
-- Keep projects as first-class scopes: unique slug, per-project Helix/webhook settings and callback URL, nested `/api/projects/:ref/...` routes, and cascade delete with an explicit UI warning.
+- Keep projects as first-class scopes: unique slug, nested `/api/projects/:ref/...` routes, and cascade delete with an explicit UI warning. **Settings** owns local identity/behavior (title, slug, callback URL, label filter, continuation); **Connections** owns sibling links (per-project Helix webhook, instance-wide Steering URL).
 - Accommodate Helix’s flat tracker contract without making Helix know Issues projects: `POST/PATCH /api/pull-requests`, `GET /api/pull-requests/:id` (UI deep-links), and `POST /api/webhooks/helix` resolve project via issue/PR id. Nested project routes remain the Issues UI / Acme Projects surface.
 - When an issue carries `sourceCardId` + `projectsCallbackUrl`, emit best-effort Projects lifecycle webhooks on started / in_review / completed transitions (no shared global state).
 - Keep webhook retries and continuation event identities deterministic.
@@ -48,7 +48,8 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
 - Require `issues.steering.receive` on the Steering decision endpoint. Record the
   decision durably and append one system comment without mutating issue or PR state;
   Issues owns any later response.
-- Issues owns the non-secret Steering URL shown under **Connections**. A saved
-  value overrides `ACME_STEERING_URL`; clearing the override returns to startup
-  configuration. Tokens remain server-side and may be sent only to trusted origins.
+- Issues owns sibling **Connections**: per-project Helix webhook settings and the
+  instance-wide non-secret Steering URL. A saved Steering URL overrides
+  `ACME_STEERING_URL`; clearing the override returns to startup configuration.
+  Tokens remain server-side and may be sent only to trusted origins.
 - Before committing cross-cutting changes, run `npm run verify` (typecheck, test, and build).

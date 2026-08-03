@@ -229,7 +229,12 @@ function AuthenticatedApp() {
   if (screen === "connections") {
     return (
       <>
-        <ConnectionsScreen onBack={backToWorkspace} onToast={showToast} />
+        <ConnectionsScreen
+          project={selectedProject}
+          onBack={backToWorkspace}
+          onToast={showToast}
+          onProjectSaved={(updated) => setSelectedSlug(updated.slug)}
+        />
         {toast && <div className="toast" role="status">{toast}</div>}
       </>
     );
@@ -438,7 +443,7 @@ function Header({
         </div>
       </div>
       <div className="header-actions">
-        <HelixTargetStatus project={project} />
+        <HelixTargetStatus project={project} onOpenConnections={onConnections} />
         <div className="view-switcher" role="navigation" aria-label="Workspace">
           <button
             className={`view-switch ${view === "issues" ? "active" : ""}`}
@@ -494,7 +499,13 @@ function Header({
   );
 }
 
-function HelixTargetStatus({ project }: { project: Project }) {
+function HelixTargetStatus({
+  project,
+  onOpenConnections,
+}: {
+  project: Project;
+  onOpenConnections?: () => void;
+}) {
   const helix = useQuery({
     queryKey: ["helix-status", project.slug, project.webhookUrl, project.webhookEnabled],
     queryFn: () => api<HelixStatus>(projectApiPath(project.slug, "/helix")),
@@ -512,15 +523,24 @@ function HelixTargetStatus({ project }: { project: Project }) {
           : "Helix · …";
   const title = helix.data?.healthUrl
     ? `${helix.data.healthUrl}${project.webhookEnabled ? "" : " · webhooks disabled"}`
-    : "Set a Helix webhook URL ending in /runs in project settings";
+    : "Set a Helix webhook URL ending in /runs in Connections";
 
+  const className = `helix-target-status ${status ?? "pending"}${project.webhookEnabled ? "" : " disabled"}${onOpenConnections ? " clickable" : ""}`;
+  if (onOpenConnections) {
+    return (
+      <button
+        type="button"
+        className={className}
+        title={title}
+        onClick={onOpenConnections}
+      >
+        <span className="helix-target-dot" aria-hidden="true" />
+        <span>{label}</span>
+      </button>
+    );
+  }
   return (
-    <div
-      className={`helix-target-status ${status ?? "pending"}${project.webhookEnabled ? "" : " disabled"}`}
-      title={title}
-      role="status"
-      aria-live="polite"
-    >
+    <div className={className} title={title} role="status" aria-live="polite">
       <span className="helix-target-dot" aria-hidden="true" />
       <span>{label}</span>
     </div>
@@ -1482,7 +1502,7 @@ function SettingsScreen({
   return (
     <FormScreen
       title="Project settings"
-      subtitle={`Configure webhooks and Helix integration for ${project.title}.`}
+      subtitle={`Identity and local workflow behavior for ${project.title}.`}
       onBack={onBack}
     >
       <form
@@ -1493,10 +1513,8 @@ function SettingsScreen({
           save.mutate({
             title: String(form.get("title") || ""),
             slug: String(form.get("slug") || ""),
-            webhookUrl: String(form.get("webhookUrl") || ""),
             labelFilter: String(form.get("labelFilter") || ""),
             commentTrigger: String(form.get("commentTrigger") || ""),
-            webhookEnabled: form.get("webhookEnabled") === "on",
             baseUrl: String(form.get("baseUrl") || ""),
           });
         }}
@@ -1510,19 +1528,12 @@ function SettingsScreen({
         <Field label="Callback URL (base URL)">
           <input name="baseUrl" className="input" defaultValue={project.baseUrl} placeholder="http://127.0.0.1:8320" autoComplete="off" />
         </Field>
-        <Field label="Webhook URL">
-          <input name="webhookUrl" className="input" defaultValue={project.webhookUrl} placeholder="http://127.0.0.1:8319/runs" autoComplete="off" />
-        </Field>
         <Field label="Label filter">
           <input name="labelFilter" className="input" defaultValue={project.labelFilter} placeholder="trigger" autoComplete="off" />
         </Field>
         <Field label="Continuation comment command">
           <input name="commentTrigger" className="input" defaultValue={project.commentTrigger} placeholder="/helix" autoComplete="off" />
         </Field>
-        <label className="checkbox-row">
-          <input name="webhookEnabled" type="checkbox" defaultChecked={project.webhookEnabled} />
-          <span>Enable webhooks</span>
-        </label>
         <MutationError mutation={save} />
         <FormActions onCancel={onBack} busy={save.isPending} submitLabel="Save settings" />
       </form>
@@ -1579,7 +1590,7 @@ function NewProjectScreen({
   return (
     <FormScreen
       title="New project"
-      subtitle="Create a workspace with its own issues, PRs, and webhook settings."
+      subtitle="Create a workspace with its own issues and local pull requests. Configure Helix under Connections after creating."
       onBack={onBack}
     >
       <form
@@ -1588,18 +1599,15 @@ function NewProjectScreen({
           event.preventDefault();
           const form = new FormData(event.currentTarget);
           const slug = String(form.get("slug") || "").trim();
-          const webhookUrl = String(form.get("webhookUrl") || "").trim();
           const labelFilter = String(form.get("labelFilter") || "").trim();
           const commentTrigger = String(form.get("commentTrigger") || "").trim();
           const baseUrl = String(form.get("baseUrl") || "").trim();
           create.mutate({
             title: String(form.get("title") || ""),
             ...(slug ? { slug } : {}),
-            ...(webhookUrl ? { webhookUrl } : {}),
             ...(labelFilter ? { labelFilter } : {}),
             ...(commentTrigger ? { commentTrigger } : {}),
             ...(baseUrl ? { baseUrl } : {}),
-            webhookEnabled: form.get("webhookEnabled") === "on",
           });
         }}
       >
@@ -1612,19 +1620,12 @@ function NewProjectScreen({
         <Field label="Callback URL (optional)">
           <input name="baseUrl" className="input" autoComplete="off" placeholder="http://127.0.0.1:8320" />
         </Field>
-        <Field label="Webhook URL (optional)">
-          <input name="webhookUrl" className="input" autoComplete="off" placeholder="http://127.0.0.1:8319/runs" />
-        </Field>
         <Field label="Label filter (optional)">
           <input name="labelFilter" className="input" autoComplete="off" placeholder="trigger" />
         </Field>
         <Field label="Continuation command (optional)">
           <input name="commentTrigger" className="input" autoComplete="off" placeholder="/helix" />
         </Field>
-        <label className="checkbox-row">
-          <input name="webhookEnabled" type="checkbox" defaultChecked />
-          <span>Enable webhooks</span>
-        </label>
         <MutationError mutation={create} />
         <FormActions onCancel={onBack} busy={create.isPending} submitLabel="Create project" />
       </form>
@@ -1660,12 +1661,145 @@ function FormScreen({
 }
 
 function ConnectionsScreen({
+  project,
   onBack,
   onToast,
+  onProjectSaved,
 }: {
+  project: Project | null;
   onBack: () => void;
   onToast: (message: string) => void;
+  onProjectSaved?: (project: Project) => void;
 }) {
+  return (
+    <FormScreen
+      title="Connections"
+      subtitle="Links from Acme Issues to sibling products. Project destinations are per project; Steering is shared by this Issues instance."
+      onBack={onBack}
+    >
+      <div className="connections-stack">
+        {project ? (
+          <HelixConnectionCard project={project} onToast={onToast} onSaved={onProjectSaved} />
+        ) : (
+          <section className="connection-card">
+            <p className="eyebrow">This project</p>
+            <h2>Helix</h2>
+            <p className="connection-note">Create a project first to configure its Helix webhook destination.</p>
+          </section>
+        )}
+        <SteeringConnectionCard onToast={onToast} />
+      </div>
+    </FormScreen>
+  );
+}
+
+function HelixConnectionCard({
+  project,
+  onToast,
+  onSaved,
+}: {
+  project: Project;
+  onToast: (message: string) => void;
+  onSaved?: (project: Project) => void;
+}) {
+  const { canWrite } = useIssuesAuth();
+  const client = useQueryClient();
+  const [webhookUrl, setWebhookUrl] = useState(project.webhookUrl);
+  const [webhookEnabled, setWebhookEnabled] = useState(project.webhookEnabled);
+
+  useEffect(() => {
+    setWebhookUrl(project.webhookUrl);
+    setWebhookEnabled(project.webhookEnabled);
+  }, [project.slug, project.webhookUrl, project.webhookEnabled]);
+
+  const helix = useQuery({
+    queryKey: ["helix-status", project.slug, project.webhookUrl, project.webhookEnabled],
+    queryFn: () => api<HelixStatus>(projectApiPath(project.slug, "/helix")),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const save = useMutation({
+    mutationFn: () => api<Project>(projectApiPath(project.slug), {
+      method: "PATCH",
+      body: JSON.stringify({ webhookUrl, webhookEnabled }),
+    }),
+    onSuccess: async (updated) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["projects"] }),
+        client.invalidateQueries({ queryKey: ["project", project.slug] }),
+        client.invalidateQueries({ queryKey: ["helix-status"] }),
+      ]);
+      onSaved?.(updated);
+      onToast("Helix connection saved");
+    },
+    onError: (error: Error) => onToast(error.message),
+  });
+
+  const status = helix.data?.status ?? (helix.isError ? "offline" : "pending");
+  const changed = webhookUrl !== project.webhookUrl || webhookEnabled !== project.webhookEnabled;
+
+  return (
+    <section className="connection-card">
+      <div className="connection-heading">
+        <div>
+          <p className="eyebrow">This project · {project.title}</p>
+          <h2>
+            Helix
+            <span className={`connection-status ${status}`}>
+              {helix.isLoading ? "checking" : status}
+            </span>
+          </h2>
+          <p className="connection-note">
+            Issues dispatches implementation triggers to this Helix `/runs` endpoint and receives run callbacks.
+          </p>
+        </div>
+      </div>
+      <div className="connection-stack">
+        <Field label="Webhook URL">
+          <input
+            className="input"
+            value={webhookUrl}
+            readOnly={!canWrite}
+            placeholder="http://127.0.0.1:8319/runs"
+            onChange={(event) => setWebhookUrl(event.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={webhookEnabled}
+            disabled={!canWrite}
+            onChange={(event) => setWebhookEnabled(event.target.checked)}
+          />
+          <span>Enable webhooks for this project</span>
+        </label>
+        <p className="connection-detail">
+          {status === "online" && helix.data?.healthUrl
+            ? `Helix is reachable at ${helix.data.healthUrl}.`
+            : status === "offline" && helix.data?.healthUrl
+              ? `Helix did not respond at ${helix.data.healthUrl}.`
+              : "Save a Helix webhook URL ending in /runs to enable delivery."}
+        </p>
+        {canWrite && (
+          <div className="form-actions">
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={!changed || save.isPending}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? "Saving…" : "Save Helix connection"}
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SteeringConnectionCard({ onToast }: { onToast: (message: string) => void }) {
   const { canWrite } = useIssuesAuth();
   const queryClient = useQueryClient();
   const connection = useQuery({
@@ -1706,68 +1840,62 @@ function ConnectionsScreen({
   const changed = current !== undefined && url.trim().replace(/\/$/, "") !== current.url.replace(/\/$/, "");
 
   return (
-    <FormScreen
-      title="Connections"
-      subtitle="Optional Acme Steering integration for implementation-trigger decisions."
-      onBack={onBack}
-    >
-      <section className="connection-card">
-        <div className="connection-heading">
-          <div>
-            <p className="eyebrow">Workflow steering</p>
-            <h2>
-              Acme Steering
-              <span className={`connection-status ${current?.status ?? "pending"}`}>
-                {connection.isLoading ? "checking" : current?.status ?? "unknown"}
-              </span>
-            </h2>
-            <p className="connection-note">
-              Issues publishes trigger-eligible lifecycle events and receives narrow implementation decisions through this connection.
-            </p>
+    <section className="connection-card">
+      <div className="connection-heading">
+        <div>
+          <p className="eyebrow">This Issues instance</p>
+          <h2>
+            Acme Steering
+            <span className={`connection-status ${current?.status ?? "pending"}`}>
+              {connection.isLoading ? "checking" : current?.status ?? "unknown"}
+            </span>
+          </h2>
+          <p className="connection-note">
+            Optional decision inbox for implementation-trigger cases. Shared by every project on this Issues instance.
+          </p>
+        </div>
+      </div>
+      {connection.isError ? (
+        <p className="react-error">{connection.error.message}</p>
+      ) : (
+        <div className="connection-stack">
+          <Field label="Steering URL">
+            <input
+              className="input"
+              value={url}
+              readOnly={!canWrite}
+              placeholder="http://127.0.0.1:8323"
+              onChange={(event) => setUrl(event.target.value)}
+              autoComplete="off"
+            />
+          </Field>
+          <p className="connection-detail">{current?.detail ?? "Checking the connection…"}</p>
+          {current?.source === "environment" && (
+            <p className="hint">Provided by startup configuration. Saving here creates an Issues-local override.</p>
+          )}
+          {current?.credentialConfigured && !current.credentialWillBeSent && current.configured && (
+            <p className="connection-warning">A service credential exists, but it will not be sent until this origin is trusted by the server configuration.</p>
+          )}
+          <p className="hint">Credentials remain server-side and cannot be viewed or changed here.</p>
+          <div className="form-actions">
+            {canWrite && current?.source === "stored" && current.startupConfigured && (
+              <button className="btn btn-ghost" type="button" disabled={save.isPending} onClick={() => save.mutate(null)}>Use startup setting</button>
+            )}
+            {canWrite && current?.configured && (
+              <button className="btn btn-ghost" type="button" disabled={save.isPending} onClick={() => save.mutate("")}>Disable</button>
+            )}
+            <button className="btn" type="button" disabled={!current?.configured || test.isPending} onClick={() => test.mutate()}>
+              {test.isPending ? "Testing…" : "Test connection"}
+            </button>
+            {canWrite && (
+              <button className="btn btn-primary" type="button" disabled={!changed || save.isPending} onClick={() => save.mutate(url)}>
+                {save.isPending ? "Saving…" : "Save"}
+              </button>
+            )}
           </div>
         </div>
-        {connection.isError ? (
-          <p className="react-error">{connection.error.message}</p>
-        ) : (
-          <div className="connection-stack">
-            <Field label="Steering URL">
-              <input
-                className="input"
-                value={url}
-                readOnly={!canWrite}
-                placeholder="http://127.0.0.1:8323"
-                onChange={(event) => setUrl(event.target.value)}
-                autoComplete="off"
-              />
-            </Field>
-            <p className="connection-detail">{current?.detail ?? "Checking the connection…"}</p>
-            {current?.source === "environment" && (
-              <p className="hint">Provided by startup configuration. Saving here creates an Issues-local override.</p>
-            )}
-            {current?.credentialConfigured && !current.credentialWillBeSent && current.configured && (
-              <p className="connection-warning">A service credential exists, but it will not be sent until this origin is trusted by the server configuration.</p>
-            )}
-            <p className="hint">Credentials remain server-side and cannot be viewed or changed here.</p>
-            <div className="form-actions">
-              {canWrite && current?.source === "stored" && current.startupConfigured && (
-                <button className="btn btn-ghost" type="button" disabled={save.isPending} onClick={() => save.mutate(null)}>Use startup setting</button>
-              )}
-              {canWrite && current?.configured && (
-                <button className="btn btn-ghost" type="button" disabled={save.isPending} onClick={() => save.mutate("")}>Disable</button>
-              )}
-              <button className="btn" type="button" disabled={!current?.configured || test.isPending} onClick={() => test.mutate()}>
-                {test.isPending ? "Testing…" : "Test connection"}
-              </button>
-              {canWrite && (
-                <button className="btn btn-primary" type="button" disabled={!changed || save.isPending} onClick={() => save.mutate(url)}>
-                  {save.isPending ? "Saving…" : "Save"}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-      </section>
-    </FormScreen>
+      )}
+    </section>
   );
 }
 

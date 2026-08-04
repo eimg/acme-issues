@@ -19,6 +19,7 @@ Acme Issues is one of the related projects. They remain separate products with s
 | **[Acme Issues](https://github.com/eimg/acme-issues)** | Local issue and PR management surface that triggers Helix and receives callbacks. |
 | **[Acme Projects](https://github.com/eimg/acme-projects)** | Standalone feature-idea and collaboration board for existing Helix repos; can manually create non-triggering issues here. |
 | **[Acme Steering](https://github.com/eimg/acme-steering)** | Optional decision inbox and delegation policy; can invoke only Issues' narrow implementation-trigger contract. |
+| **[Acme Intel](https://github.com/eimg/acme-intel)** | Optional think-lab; may study allowlisted Issues experience without mutating issues or PRs. |
 | **[Acme Todo](https://github.com/eimg/acme-todo)** | Disposable target application used for agent implementation and verification. |
 
 Existing-repo exercise: Acme Issues sends a work item to Helix, which works on Acme Todo. Primer develops the separate knowledge side of the same fictional Acme context.

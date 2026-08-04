@@ -20,7 +20,7 @@ Treat the Acme suite as an executable reference architecture, not a universal pl
 
 Existing-repo flow: Acme issue → Helix implementation → Acme local PR → Helix independent PR review → human merge record. Primer shares the fictional Acme context but is not in that runtime path.
 
-Default feature handoff: Acme Projects ready card → linked issue labeled `acme-projects`; a human adds the configured trigger label here to start Helix. Issues now projects accepted-run, PR, and completion callbacks back to Projects. Optional Steering can request the same narrow trigger through Issues' public action contract, but the current reference policy keeps that action human-authorized. Acme Projects never calls Helix directly; see [`docs/workflow-model.md`](./docs/workflow-model.md).
+Default feature handoff: Acme Projects ready card → linked issue labeled `acme-projects`; a human adds the configured trigger label here to start Helix. Issues projects accepted-trigger, PR, and completion callbacks back to Projects. Optional Steering can request the same narrow trigger through Issues' public action contract, but the current reference policy keeps that action human-authorized. Acme Projects never calls Helix directly; see [`docs/workflow-model.md`](./docs/workflow-model.md).
 
 New-project inception belongs to Prelude. Prelude does not create issues or call Helix today; Helix consumes its exported artifacts via empty-workspace bootstrap.
 

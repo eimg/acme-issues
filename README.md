@@ -28,7 +28,7 @@ Default feature handoff: a ready Acme Projects card can create a thin
 linked issue here with the `acme-projects` label via the nested project issues
 API (`POST /api/projects/:ref/issues`). It does not include `trigger`;
 a human adds the configured trigger label to start the existing Acme Issues →
-Helix flow. Issues projects accepted-run, PR, and completion lifecycle callbacks
+Helix flow. Issues projects accepted-trigger, PR, and completion lifecycle callbacks
 back to the linked Projects card. Optional Steering may request the same trigger
 through Issues' public action contract; the shipped reference policy still
 requires a human for this action. Acme Projects will not call Helix directly; see
@@ -264,7 +264,10 @@ X-Helix-Event: run.completed
 
 The callback may include `parentRunId` and `rootRunId`. acme-issues stores this lineage and uses the newest completed run when it delivers a reopen or command-comment continuation.
 
-**`run.started`** (supported by this tracker; Helix does not send it yet):
+**`run.started`** (supported by this tracker as an alternate/idempotent path;
+Helix does not send it today). The default reference path marks `in_progress`
+when Helix accepts the Issues trigger (label, create-with-trigger, manual, or
+Steering action) and projects `implementation.started` to linked Projects cards:
 
 ```
 POST /api/webhooks/helix

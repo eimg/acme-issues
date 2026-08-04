@@ -20,7 +20,7 @@ Acme Projects card
   → Acme Projects requests a linked implementation issue from Acme Issues
   → human adds the trigger label in Acme Issues
   → Acme Issues triggers Helix in the project repository
-  → accepted Helix run moves the source card to In progress
+  → Helix accepting the trigger moves the source card to In progress
   → Helix registers the resulting PR in Acme Issues
   → PR creation moves the source card to In review
   → human-recorded merge closes the issue and moves the source card to Done
@@ -57,8 +57,10 @@ Acme Projects creates the issue through the Acme Issues nested project API with
 `acme-projects`, but without the configured trigger label. A human adds that
 label here when ready. Optional Acme Steering may request the same trigger through
 `issues.trigger_implementation`; the current reference policy keeps it human-required.
-The card moves to `In progress` only after Helix accepts a run, then Issues projects
-PR registration and completion back to `In review` and `Done`.
+The card moves to `In progress` when Helix accepts the Issues trigger (create with
+trigger label, label-add, manual trigger, or Steering action). Issues then projects
+PR registration and completion back to `In review` and `Done`. A Helix `run.started`
+webhook remains supported as an alternate/idempotent path; Helix does not send it today.
 
 A later organization-specific Steering policy may automatically authorize the
 trigger. Failed issue creation or run submission leaves the card `Ready` and
@@ -69,7 +71,7 @@ The intended state projection is:
 | Acme Projects state | Required external fact |
 |---|---|
 | `Ready` | Feature intent is eligible; no accepted run is required |
-| `In progress` | A linked issue exists and Helix accepted a run |
+| `In progress` | A linked issue exists and Helix accepted the implementation trigger |
 | `In review` | Helix registered a linked PR in Acme Issues |
 | `Done` | A human recorded the PR merge in Acme Issues |
 

@@ -157,16 +157,14 @@ describe("acme-issues API", () => {
     const issueId = created.body.issue.id as number;
     assert.equal(created.body.issue.sourceCardId, "42");
     assert.equal(created.body.issue.projectsCallbackUrl, "http://projects.test/api/webhooks/issues");
+    assert.equal(created.body.issue.status, "open");
 
-    await request(app)
-      .post("/api/webhooks/helix")
-      .set("X-Helix-Event", "run.started")
-      .send({
-        event: "run.started",
-        run: { id: "run-projects-1", status: "running", startedAt: Date.now() },
-        issue: { id: issueId, title: "From Projects" },
-      })
+    const triggered = await request(app)
+      .patch(`/api/projects/default/issues/${issueId}`)
+      .send({ labels: ["trigger"] })
       .expect(200);
+    assert.equal(triggered.body.issue.status, "in_progress");
+    assert.equal(triggered.body.delivery.success, true);
 
     assert.equal(projectsLifecycleCalls.length, 1);
     assert.equal(
@@ -243,6 +241,7 @@ describe("acme-issues API", () => {
       },
     });
     assert.equal(res.body.delivery.success, true);
+    assert.equal(res.body.issue.status, "in_progress");
   });
 
   it("does not auto-trigger without filter label", async () => {
@@ -270,6 +269,7 @@ describe("acme-issues API", () => {
 
     assert.equal(webhookCalls.length, 1);
     assert.equal(updated.body.delivery.success, true);
+    assert.equal(updated.body.issue.status, "in_progress");
   });
 
   it("manual trigger works for any open issue", async () => {
@@ -285,6 +285,7 @@ describe("acme-issues API", () => {
 
     assert.equal(webhookCalls.length, 1);
     assert.equal(res.body.delivery.success, true);
+    assert.equal(res.body.issue.status, "in_progress");
   });
 
   it("lists deliveries and supports remove/clear", async () => {
@@ -454,10 +455,11 @@ describe("acme-issues API", () => {
   it("marks issue in_progress on helix run.started and closes on run.completed", async () => {
     const created = await request(app)
       .post("/api/projects/default/issues")
-      .send({ title: "To progress", labels: ["trigger"] })
+      .send({ title: "To progress", labels: [] })
       .expect(201);
 
     const issueId = created.body.issue.id as number;
+    assert.equal(created.body.issue.status, "open");
     const started = await request(app)
       .post("/api/webhooks/helix")
       .set("X-Helix-Event", "run.started")

@@ -139,6 +139,18 @@ export function createApp(opts: CreateAppOptions): Express {
     });
   };
 
+  /** After Helix accepts a trigger/continuation, project In progress (idempotent). */
+  const markImplementationStarted = async (
+    project: Project,
+    issue: Issue,
+    externalEventId: string,
+  ): Promise<Issue> => {
+    if (issue.status === "in_progress" || issue.status === "closed") return issue;
+    const started = updateIssue(db, project, issue.id, { status: "in_progress" }) ?? issue;
+    await emitProjects(started, project, "implementation.started", externalEventId);
+    return started;
+  };
+
   /**
    * Shared PR create for nested UI routes and Helix's flat tracker contract.
    * Helix POSTs `/api/pull-requests` with `issueId`; Issues resolves the project.
@@ -321,11 +333,9 @@ export function createApp(opts: CreateAppOptions): Express {
         action.requestId, "unavailable", String(issue.updatedAt), delivery?.error ?? "The configured Helix destination did not accept the action.",
       ));
     }
-    const started = updateIssue(db, resolved.project, issue.id, { status: "in_progress" }) ?? issue;
-    await emitProjects(
-      started,
+    const started = await markImplementationStarted(
       resolved.project,
-      "implementation.started",
+      issue,
       `issue:${issue.id}:steering:${action.requestId}`,
     );
     notifySteering(issueNotification(started, "issue.implementation_triggered", "Issue sent to Helix by Steering", "resolved"));
@@ -639,18 +649,26 @@ export function createApp(opts: CreateAppOptions): Express {
     });
 
     let delivery = null;
+    let current = issue;
     if (dispatcher.shouldAutoTrigger(issue, config)) {
       delivery = await dispatcher.dispatchForIssue(issue, "issue.created");
+      if (delivery?.success) {
+        current = await markImplementationStarted(
+          project,
+          issue,
+          `issue:${issue.id}:dispatch:issue.created`,
+        );
+      }
     }
 
     notifySteering(issueNotification(
-      issue,
+      current,
       delivery ? "issue.implementation_triggered" : "issue.created",
       delivery ? "Issue sent to Helix" : "Issue created",
       issueMatchesFilter(issue, config.labelFilter) ? (delivery ? "resolved" : "open") : undefined,
     ));
 
-    res.status(201).json({ issue, delivery });
+    res.status(201).json({ issue: current, delivery });
   });
 
   app.patch("/api/projects/:projectRef/issues/:id", async (req, res) => {
@@ -672,7 +690,7 @@ export function createApp(opts: CreateAppOptions): Express {
     if (status) patch.status = status;
     if (body.labels !== undefined) patch.labels = parseLabels(body.labels);
 
-    const issue = updateIssue(db, project, id, patch);
+    let issue = updateIssue(db, project, id, patch);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -725,12 +743,21 @@ export function createApp(opts: CreateAppOptions): Express {
       } else {
         delivery = await dispatcher.dispatchForIssue(issue, "issue.label_added");
       }
+      if (delivery?.success) {
+        issue = await markImplementationStarted(
+          project,
+          issue,
+          `issue:${issue.id}:dispatch:${reopened ? "issue.reopened" : "issue.label_added"}`,
+        );
+      }
     }
 
     notifySteering(issueNotification(
       issue,
-      `issue.${issue.status}`,
-      `Issue marked ${issue.status.replaceAll("_", " ")}`,
+      delivery?.success ? "issue.implementation_triggered" : `issue.${issue.status}`,
+      delivery?.success
+        ? "Issue sent to Helix"
+        : `Issue marked ${issue.status.replaceAll("_", " ")}`,
       delivery ? "resolved" : issue.status === "open" && issueMatchesFilter(issue, config.labelFilter) ? "open" : "superseded",
     ));
 
@@ -759,8 +786,12 @@ export function createApp(opts: CreateAppOptions): Express {
     }
 
     const delivery = await dispatcher.dispatchForIssue(issue, "manual");
-    notifySteering(issueNotification(issue, "issue.implementation_triggered", "Issue manually sent to Helix", "resolved"));
-    res.json({ issue, delivery });
+    const current =
+      delivery?.success
+        ? await markImplementationStarted(project, issue, `issue:${issue.id}:dispatch:manual`)
+        : issue;
+    notifySteering(issueNotification(current, "issue.implementation_triggered", "Issue manually sent to Helix", "resolved"));
+    res.json({ issue: current, delivery });
   });
 
   // Helix soft contract: flat tracker paths. Helix does not know Issues projects;

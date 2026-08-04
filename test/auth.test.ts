@@ -4,7 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
-import { IdentityClientError, type Principal, type ResolveOptions } from "acme-identity/client";
+import {
+  IssuesAuthError,
+  type AuthRequest,
+  type IssuesAuthAdapter,
+  type IssuesPrincipal,
+  type SessionResult,
+} from "../src/auth.js";
 import { createApp } from "../src/app.js";
 import { openDatabase } from "../src/db.js";
 import { createProject } from "../src/projects.js";
@@ -24,32 +30,34 @@ describe("Acme Issues identity permissions", () => {
     steering: ["issues.steering.trigger"],
     receiver: ["issues.steering.receive"],
   };
-  const principalResolver = async (options: ResolveOptions): Promise<Principal> => {
-    const username = options.devUser ?? "admin";
-    if (username === "signed-out") {
-      throw new IdentityClientError("Authentication required", "unauthenticated");
-    }
-    if (username === "outage") {
-      throw new IdentityClientError("Identity service unreachable", "unavailable");
-    }
-    return principal(username, principals[username] ?? []);
+  const authAdapter: IssuesAuthAdapter = {
+    provider: "test",
+    accountUrl: "http://identity.test/?tab=account",
+    async resolve(request: AuthRequest) {
+      const username = request.devUser ?? "admin";
+      if (username === "signed-out") {
+        throw new IssuesAuthError("Authentication required", "unauthenticated");
+      }
+      if (username === "outage") {
+        throw new IssuesAuthError("Identity service unreachable", "unavailable");
+      }
+      return principal(username, principals[username] ?? []);
+    },
+    async signIn(_credentials, _request): Promise<SessionResult> {
+      return {
+        status: 201,
+        body: { principal: principal("member", principals.member) },
+        setCookie: "acme_identity_session=sess_test; HttpOnly; SameSite=Lax; Path=/",
+      };
+    },
+    async signOut(): Promise<SessionResult> {
+      return { status: 200, body: { signedOut: true } };
+    },
   };
   const app = createApp({
     db,
-    principalResolver,
+    authAdapter,
     authMode: "off",
-    identityFetchFn: async (_input, init) => new Response(
-      JSON.stringify(init?.method === "DELETE"
-        ? { signedOut: true }
-        : { principal: principal("member", principals.member) }),
-      {
-        status: init?.method === "DELETE" ? 200 : 201,
-        headers: {
-          "content-type": "application/json",
-          "set-cookie": "acme_identity_session=sess_test; HttpOnly; SameSite=Lax; Path=/",
-        },
-      },
-    ),
   });
 
   before(() => {
@@ -166,7 +174,7 @@ describe("Acme Issues identity permissions", () => {
   });
 });
 
-function principal(username: string, permissions: string[]): Principal {
+function principal(username: string, permissions: string[]): IssuesPrincipal {
   return {
     schemaVersion: "acme.principal.v1",
     sub: `dev:${username}`,

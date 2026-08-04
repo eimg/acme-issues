@@ -41,7 +41,8 @@ New-project inception belongs to Prelude. Prelude does not create issues or call
   Acme Issues owns the generated implementation attempt and PR lifecycle.
 - Do not add GitHub as a requirement for the local webhook loop.
 - Keep `ACME_AUTH_MODE=off` as the consumer default for standalone feature tests.
-  In `local`, gate reads on `issues.read` or `issues.write`, ordinary mutations on
+  In `local`, resolve principals through the plain-HTTP Acme Identity adapter
+  (`ACME_IDENTITY_URL`), gate reads on `issues.read` or `issues.write`, ordinary mutations on
   `issues.write`, and never branch on fixed role names. Require `issues.write`
   on `POST /api/webhooks/helix` and `issues.steering.trigger` only on the narrow
   Steering action endpoint; machine callers use scoped bearer tokens, and

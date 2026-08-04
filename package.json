@@ -42,7 +42,6 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
-    "acme-identity": "file:../acme-identity",
     "better-sqlite3": "^12.11.1",
     "express": "^5.2.1",
     "react": "^19.2.8",

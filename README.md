@@ -12,7 +12,7 @@ Acme Issues is one of the related projects. They remain separate products with s
 
 | Project | Role |
 |---|---|
-| **[Acme Identity](https://github.com/eimg/acme-identity)** | Suite auth; Issues resolves principals and enforces capability permissions. |
+| **[Acme Identity](https://github.com/eimg/acme-identity)** | Suite auth; Issues uses a plain-HTTP adapter and enforces capability permissions. |
 | **[Primer](https://github.com/eimg/primer)** | Knowledge product and fictional Acme evidence corpus; not currently part of the Issues → Helix runtime loop. |
 | **[Prelude](https://github.com/eimg/prelude)** | Project inception workspace; exports bootstrap artifacts for Helix empty-workspace bootstrap. |
 | **[Helix](https://github.com/eimg/helix)** | Agent workflow control plane that receives work and orchestrates changes. |
@@ -105,19 +105,21 @@ Acme Steering URL. Create issues from the UI or nested project API.
 ### Authentication and permissions
 
 Acme Issues defaults to `ACME_AUTH_MODE=off`, which resolves an admin development
-principal locally. This keeps standalone development and existing feature tests
-independent of Acme Identity. For real sign-in and role checks, start both apps:
+principal locally through a product-owned auth adapter (no Identity package
+dependency). This keeps standalone development and feature tests independent of
+Acme Identity. For real sign-in and role checks, start Identity and run Issues
+in local mode:
 
 ```bash
-# in ../acme-identity
+# Identity
 ACME_AUTH_MODE=local npm run dev
 
-# in this repository
+# Issues (plain HTTP to Identity)
 ACME_AUTH_MODE=local ACME_IDENTITY_URL=http://127.0.0.1:8316 npm run dev
 ```
 
 The browser signs in through Acme Issues, which forwards the session request to
-Identity. `issues.read` is read-only; `issues.write` can both read and mutate.
+Identity over HTTP. `issues.read` is read-only; `issues.write` can both read and mutate.
 The UI and API check permission strings rather than role names, so later custom
 roles work without code changes. The built-in `viewer` is read-only, while
 `member`, `operator`, and `admin` can mutate Issues data.

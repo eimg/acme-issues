@@ -21,8 +21,7 @@ import type {
   WebhookDelivery,
 } from "../../src/types";
 import type { HelixStatus } from "../../src/helixStatus";
-import { hasPermission } from "acme-identity/permissions";
-import type { AuthMode, Principal } from "acme-identity/types";
+import { hasPermission, type AuthMode, type Principal } from "./auth";
 import { api, formatStatus, formatTime, projectApiPath } from "./api";
 
 type View = "issues" | "pull-requests";
